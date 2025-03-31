@@ -7,6 +7,7 @@ def clear_database():
     print("Очистка базы данных...")
     data_dir = os.getenv('DATA_DIR', '.')
     db_path = os.path.join(data_dir, 'tools.db')
+    print(f"Путь к базе данных: {db_path}")
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     
@@ -30,10 +31,12 @@ def clear_database():
 
 def populate_database():
     """Заполняет базу данных начальными данными"""
+    print("Начало заполнения базы данных...")
     # Очищаем базу данных
     clear_database()
     
     # Создаем таблицы
+    print("Создание таблиц...")
     create_tables()
     
     # Список инструментов и их количество
@@ -72,6 +75,7 @@ def populate_database():
     # Добавляем инструменты
     data_dir = os.getenv('DATA_DIR', '.')
     db_path = os.path.join(data_dir, 'tools.db')
+    print(f"Путь к базе данных для добавления инструментов: {db_path}")
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     
@@ -86,11 +90,15 @@ def populate_database():
             print(f"✅ Добавлен инструмент: {tool_name} (количество: {quantity})")
         
         conn.commit()
+        print(f"Добавлено {len(tools)} инструментов")
     except Exception as e:
         print(f"❌ Ошибка при добавлении инструментов: {str(e)}")
         conn.rollback()
     finally:
         conn.close()
+    print("Заполнение базы данных завершено")
 
 if __name__ == "__main__":
+    print("Запуск populate_database.py")
     populate_database()
+    print("Скрипт populate_database.py завершен")

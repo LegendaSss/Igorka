@@ -12,7 +12,7 @@ class DatabaseConnection:
         db_path = os.path.join(os.getenv('DATA_DIR', ''), 'tools.db')
         if not db_path:
             db_path = 'tools.db'
-        
+        logger.info(f"DatabaseConnection: путь к базе данных: {db_path}")
         self.conn = sqlite3.connect(db_path)
         self.cursor = self.conn.cursor()
 
@@ -32,64 +32,72 @@ def create_tables():
     db_path = os.path.join(os.getenv('DATA_DIR', ''), 'tools.db')
     if not db_path:
         db_path = 'tools.db'
+    logger.info(f"create_tables: путь к базе данных: {db_path}")
     
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
-    # Создаем таблицу инструментов, если её нет
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS tools (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            description TEXT,
-            status TEXT DEFAULT 'available',
-            last_maintenance_date DATE,
-            quantity INTEGER DEFAULT 1
-        )
-    ''')
+    try:
+        # Создаем таблицу инструментов, если её нет
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS tools (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                description TEXT,
+                status TEXT DEFAULT 'available',
+                last_maintenance_date DATE,
+                quantity INTEGER DEFAULT 1
+            )
+        ''')
+        logger.info("create_tables: создана таблица tools")
 
-    # Создаем таблицу выданных инструментов, если её нет
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS issued_tools (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            tool_id INTEGER NOT NULL,
-            employee_name TEXT NOT NULL,
-            issue_date DATETIME DEFAULT CURRENT_TIMESTAMP,
-            expected_return_date DATETIME,
-            return_date DATETIME,
-            chat_id INTEGER,
-            FOREIGN KEY (tool_id) REFERENCES tools(id)
-        )
-    ''')
+        # Создаем таблицу выданных инструментов, если её нет
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS issued_tools (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tool_id INTEGER,
+                employee_name TEXT NOT NULL,
+                issue_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+                return_date DATETIME,
+                FOREIGN KEY (tool_id) REFERENCES tools(id)
+            )
+        ''')
+        logger.info("create_tables: создана таблица issued_tools")
 
-    # Создаем таблицу истории инструментов, если её нет
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS tool_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            tool_id INTEGER NOT NULL,
-            action TEXT NOT NULL,
-            date DATETIME DEFAULT CURRENT_TIMESTAMP,
-            employee_name TEXT,
-            notes TEXT,
-            FOREIGN KEY (tool_id) REFERENCES tools(id)
-        )
-    ''')
+        # Создаем таблицу истории инструментов
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS tool_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tool_id INTEGER,
+                action TEXT NOT NULL,
+                employee_name TEXT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (tool_id) REFERENCES tools(id)
+            )
+        ''')
+        logger.info("create_tables: создана таблица tool_history")
 
-    # Создаем таблицу запросов на выдачу, если её нет
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS issue_requests (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            tool_id INTEGER NOT NULL,
-            employee_name TEXT NOT NULL,
-            chat_id INTEGER NOT NULL,
-            request_date DATETIME DEFAULT CURRENT_TIMESTAMP,
-            status TEXT DEFAULT 'pending',
-            FOREIGN KEY (tool_id) REFERENCES tools(id)
-        )
-    ''')
+        # Создаем таблицу запросов на выдачу инструментов
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS issue_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tool_id INTEGER,
+                employee_name TEXT NOT NULL,
+                chat_id INTEGER NOT NULL,
+                request_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+                status TEXT DEFAULT 'pending',
+                FOREIGN KEY (tool_id) REFERENCES tools(id)
+            )
+        ''')
+        logger.info("create_tables: создана таблица issue_requests")
 
-    conn.commit()
-    conn.close()
+        conn.commit()
+        logger.info("create_tables: все таблицы успешно созданы")
+    except Exception as e:
+        logger.error(f"create_tables: ошибка при создании таблиц: {str(e)}")
+        conn.rollback()
+    finally:
+        conn.close()
 
 def get_tools():
     """Получает список всех инструментов"""
@@ -196,10 +204,10 @@ def get_tool_history():
     cursor = conn.cursor()
     
     cursor.execute('''
-        SELECT t.name, th.action, th.date, th.employee_name, th.notes
+        SELECT t.name, th.action, th.timestamp, th.employee_name, th.notes
         FROM tool_history th
         JOIN tools t ON th.tool_id = t.id
-        ORDER BY th.date DESC
+        ORDER BY th.timestamp DESC
     ''')
     
     history = cursor.fetchall()
