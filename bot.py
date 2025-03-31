@@ -1153,17 +1153,17 @@ async def approve_return(callback_query: types.CallbackQuery):
             logging.error(f"DEBUG: Неверный формат callback data: {callback_query.data}")
             await callback_query.answer("❌ Ошибка: неверный формат данных")
             return
-
+            
         issue_id = int(data[2])
         user_id = int(data[3])
-
+        
         # Получаем информацию о возврате
         return_info = get_return_info(issue_id)
         if not return_info:
             logging.error(f"DEBUG: Не найдена информация о возврате с ID {issue_id}")
             await callback_query.answer("❌ Ошибка: информация о возврате не найдена")
             return
-
+            
         # Завершаем возврат
         if complete_return(issue_id):
             # Уведомляем администратора
@@ -1264,3 +1264,234 @@ async def reject_return(callback_query: types.CallbackQuery):
             reply_markup=None
         )
         await callback_query.answer("Произошла ошибка при отклонении возврата")
+
+def get_admin_keyboard():
+    """Создает клавиатуру для админа"""
+    keyboard = InlineKeyboardMarkup(row_width=2)
+    keyboard.add(
+        InlineKeyboardButton("📊 Выданные", callback_data="admin_issued"),
+        InlineKeyboardButton("📝 Запросы", callback_data="admin_requests"),
+        InlineKeyboardButton("📈 Статистика", callback_data="admin_stats"),
+        InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
+    )
+    return keyboard
+
+@dp.callback_query_handler(lambda c: c.data == 'admin_issued')
+async def show_admin_issued(callback_query: types.CallbackQuery):
+    """Показывает админу список выданных инструментов"""
+    try:
+        # Подтверждаем обработку callback
+        await callback_query.answer()
+        
+        # Получаем список выданных инструментов
+        issued_tools = get_issued_tools_for_admin()
+        
+        if not issued_tools:
+            await callback_query.message.edit_text(
+                "📊 Выданные инструменты\n\n"
+                "На данный момент нет выданных инструментов.",
+                reply_markup=get_admin_keyboard()
+            )
+            return
+            
+        # Формируем сообщение
+        message_text = "📊 Выданные инструменты:\n\n"
+        for tool in issued_tools:
+            issue_date = datetime.strptime(tool[3], '%Y-%m-%d %H:%M:%S').strftime('%d.%m.%Y')
+            expected_return = datetime.strptime(tool[4], '%Y-%m-%d').strftime('%d.%m.%Y') if tool[4] else "Не указано"
+            message_text += (
+                f"🔧 {tool[2]}\n"
+                f"👤 Сотрудник: {tool[1]}\n"
+                f"📅 Выдан: {issue_date}\n"
+                f"📅 Ожидается: {expected_return}\n\n"
+            )
+            
+        # Отправляем сообщение
+        await callback_query.message.edit_text(
+            message_text,
+            reply_markup=get_admin_keyboard()
+        )
+        
+    except Exception as e:
+        logging.error(f"Ошибка при показе выданных инструментов: {e}")
+        await callback_query.message.edit_text(
+            "❌ Произошла ошибка при получении списка выданных инструментов.",
+            reply_markup=get_admin_keyboard()
+        )
+
+@dp.callback_query_handler(lambda c: c.data == 'admin_requests')
+async def show_admin_requests(callback_query: types.CallbackQuery):
+    """Показывает админу список запросов на выдачу"""
+    try:
+        # Подтверждаем обработку callback
+        await callback_query.answer()
+        
+        # Получаем список запросов
+        requests = get_pending_requests()
+        
+        if not requests:
+            await callback_query.message.edit_text(
+                "📝 Запросы на выдачу\n\n"
+                "На данный момент нет активных запросов.",
+                reply_markup=get_admin_keyboard()
+            )
+            return
+            
+        # Формируем сообщение и клавиатуру
+        message_text = "📝 Активные запросы на выдачу:\n\n"
+        keyboard = InlineKeyboardMarkup(row_width=1)
+        
+        for req in requests:
+            request_date = datetime.strptime(req[3], '%Y-%m-%d %H:%M:%S').strftime('%d.%m.%Y %H:%M')
+            message_text += (
+                f"🔧 {req[4]}\n"  # Название инструмента
+                f"👤 Сотрудник: {req[2]}\n"
+                f"📅 Запрос от: {request_date}\n\n"
+            )
+            keyboard.add(
+                InlineKeyboardButton(
+                    f"✅ Одобрить {req[4]} для {req[2]}", 
+                    callback_data=f"approve_{req[1]}_{req[5]}"  # tool_id и chat_id
+                )
+            )
+            
+        # Добавляем кнопку возврата
+        keyboard.add(InlineKeyboardButton("🔙 Назад", callback_data="admin_menu"))
+            
+        # Отправляем сообщение
+        await callback_query.message.edit_text(
+            message_text,
+            reply_markup=keyboard
+        )
+        
+    except Exception as e:
+        logging.error(f"Ошибка при показе запросов: {e}")
+        await callback_query.message.edit_text(
+            "❌ Произошла ошибка при получении списка запросов.",
+            reply_markup=get_admin_keyboard()
+        )
+
+@dp.callback_query_handler(lambda c: c.data == 'admin_stats')
+async def show_admin_stats(callback_query: types.CallbackQuery):
+    """Показывает админу статистику"""
+    try:
+        # Подтверждаем обработку callback
+        await callback_query.answer()
+        
+        # Получаем статистику
+        total_tools = len(get_tools())
+        issued_tools = len(get_issued_tools_for_admin())
+        pending_requests = len(get_pending_requests())
+        
+        # Формируем сообщение
+        message_text = (
+            "📈 Статистика:\n\n"
+            f"🔧 Всего инструментов: {total_tools}\n"
+            f"📤 Выдано: {issued_tools}\n"
+            f"📥 Доступно: {total_tools - issued_tools}\n"
+            f"📝 Активных запросов: {pending_requests}\n"
+        )
+        
+        # Отправляем сообщение
+        await callback_query.message.edit_text(
+            message_text,
+            reply_markup=get_admin_keyboard()
+        )
+        
+    except Exception as e:
+        logging.error(f"Ошибка при показе статистики: {e}")
+        await callback_query.message.edit_text(
+            "❌ Произошла ошибка при получении статистики.",
+            reply_markup=get_admin_keyboard()
+        )
+
+@dp.callback_query_handler(lambda c: c.data == 'admin_menu')
+async def show_admin_menu(callback_query: types.CallbackQuery):
+    """Показывает админу главное меню"""
+    try:
+        await callback_query.answer()
+        await callback_query.message.edit_text(
+            "👨‍💼 Панель администратора\n\n"
+            "Выберите действие:",
+            reply_markup=get_admin_keyboard()
+        )
+    except Exception as e:
+        logging.error(f"Ошибка при показе админ меню: {e}")
+        await callback_query.message.edit_text(
+            "❌ Произошла ошибка.",
+            reply_markup=get_admin_keyboard()
+        )
+
+@dp.message_handler(commands=['admin'])
+async def admin_command(message: types.Message):
+    """Обработчик команды /admin"""
+    try:
+        # Проверяем, является ли пользователь администратором
+        if str(message.from_user.id) != ADMIN_ID:
+            await message.reply("❌ У вас нет прав администратора.")
+            return
+
+        await message.reply(
+            "👨‍💼 Панель администратора\n\n"
+            "Выберите действие:",
+            reply_markup=get_admin_keyboard()
+        )
+    except Exception as e:
+        logging.error(f"Ошибка при обработке команды admin: {e}")
+        await message.reply(
+            "❌ Произошла ошибка при открытии панели администратора.",
+            reply_markup=InlineKeyboardMarkup().add(
+                InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
+            )
+        )
+
+# Обновляем keyboard для главного меню
+def get_main_keyboard(user_id):
+    """Создает клавиатуру главного меню"""
+    keyboard = InlineKeyboardMarkup(row_width=2)
+    keyboard.add(
+        InlineKeyboardButton("🔧 Взять инструмент", callback_data="get_tool"),
+        InlineKeyboardButton("📦 Вернуть инструмент", callback_data="return"),
+        InlineKeyboardButton("📋 Мои инструменты", callback_data="my_tools")
+    )
+    # Добавляем кнопку админа только для админа
+    if str(user_id) == ADMIN_ID:
+        keyboard.add(InlineKeyboardButton("👨‍💼 Панель администратора", callback_data="admin_menu"))
+    return keyboard
+
+@dp.callback_query_handler(lambda c: c.data == 'main_menu')
+async def show_main_menu(callback_query: types.CallbackQuery):
+    """Показывает главное меню"""
+    try:
+        await callback_query.answer()
+        await callback_query.message.edit_text(
+            "🏠 Главное меню\n\n"
+            "Выберите действие:",
+            reply_markup=get_main_keyboard(callback_query.from_user.id)
+        )
+    except Exception as e:
+        logging.error(f"Ошибка при показе главного меню: {e}")
+        await callback_query.message.edit_text(
+            "❌ Произошла ошибка при открытии главного меню.",
+            reply_markup=get_main_keyboard(callback_query.from_user.id)
+        )
+
+@dp.message_handler(commands=['start'])
+async def start_command(message: types.Message):
+    """Обработчик команды /start"""
+    try:
+        await message.reply(
+            "👋 Добро пожаловать в систему учета инструментов!\n\n"
+            "🔧 Здесь вы можете:\n"
+            "- Брать инструменты\n"
+            "- Возвращать их\n"
+            "- Просматривать свои активные инструменты\n\n"
+            "Выберите действие:",
+            reply_markup=get_main_keyboard(message.from_user.id)
+        )
+    except Exception as e:
+        logging.error(f"Ошибка при обработке команды start: {e}")
+        await message.reply(
+            "❌ Произошла ошибка при запуске бота.\n"
+            "Пожалуйста, попробуйте позже или обратитесь к администратору."
+        )
