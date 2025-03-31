@@ -608,7 +608,7 @@ async def process_admin_action(callback_query: types.CallbackQuery):
 
 # Добавляем веб-сервер
 WEBHOOK_HOST = 'https://igorka.onrender.com'
-WEBHOOK_PATH = f'/webhook/{API_TOKEN}'
+WEBHOOK_PATH = '/webhook'
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 
 app = web.Application()
@@ -628,11 +628,8 @@ async def on_shutdown(app):
 
 async def handle_webhook(request):
     """Обработчик вебхука"""
-    if request.match_info.get('token') != API_TOKEN:
-        return web.Response(status=403)
-    
-    request_data = await request.json()
-    update = types.Update(**request_data)
+    # Проверяем подпись запроса от Telegram
+    update = types.Update(**await request.json())
     await dp.process_update(update)
     return web.Response(status=200)
 
