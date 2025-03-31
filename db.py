@@ -2,6 +2,7 @@ import sqlite3
 from datetime import datetime, timedelta
 import logging
 import os
+from typing import Optional, Tuple
 
 # Create a logger
 logger = logging.getLogger(__name__)
@@ -154,31 +155,123 @@ def get_admin_issued_tools():
         logger.error(f"Ошибка при получении списка выданных инструментов для админа: {e}")
         return []
 
-def get_issued_tool_by_id(tool_id: int):
-    """Получить информацию о выданном инструменте по ID"""
+def get_issued_tool_by_id(tool_id: int) -> Optional[Tuple]:
+    """
+    Получить информацию о выданном инструменте по ID
+    Returns tuple: (issue_id, tool_id, tool_name, employee_name, issue_date, expected_return_date)
+    """
     try:
+        logging.info(f"DEBUG: Получение информации о выданном инструменте {tool_id}")
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
-        cursor.execute('''
-            SELECT i.id as issue_id, t.name, i.employee_name,
-                   COALESCE(strftime('%Y-%m-%d', i.issue_date), date('now')) as issue_date,
-                   COALESCE(strftime('%Y-%m-%d', i.expected_return_date), date('now', '+7 days')) as expected_return_date
-            FROM tools t
-            JOIN issued_tools i ON t.id = i.tool_id
-            WHERE t.id = ? AND i.return_date IS NULL
-            ORDER BY i.issue_date DESC
-            LIMIT 1
-        ''', (tool_id,))
-        issued_tool = cursor.fetchone()
-        if issued_tool:
-            logger.info(f"DEBUG: Найден выданный инструмент: {issued_tool}")
-        else:
-            logger.error(f"DEBUG: Не найден выданный инструмент с ID {tool_id}")
-        conn.close()
-        return issued_tool
-    except Exception as e:
-        logger.error(f"Ошибка при получении информации о выданном инструменте: {e}")
+        
+        cursor.execute("""
+            SELECT i.id, i.tool_id, t.name, i.employee_name, i.issue_date, i.expected_return_date
+            FROM issued_tools i
+            JOIN tools t ON i.tool_id = t.id
+            WHERE i.tool_id = ? AND i.return_date IS NULL
+        """, (tool_id,))
+        
+        result = cursor.fetchone()
+        if result:
+            logging.info(f"DEBUG: Найден выданный инструмент: {result}")
+            return result
+        
+        logging.info(f"DEBUG: Выданный инструмент не найден")
         return None
+        
+    except Exception as e:
+        logging.error(f"Ошибка при получении информации о выданном инструменте: {e}")
+        return None
+    finally:
+        conn.close()
+
+def get_return_info(issue_id: int) -> Optional[Tuple]:
+    """
+    Получить информацию для возврата инструмента
+    Returns tuple: (tool_name, tool_id, employee_name, issue_date)
+    """
+    try:
+        logging.info(f"DEBUG: Получение информации для возврата issue_id={issue_id}")
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT t.name, i.tool_id, i.employee_name, i.issue_date
+            FROM issued_tools i
+            JOIN tools t ON i.tool_id = t.id
+            WHERE i.id = ? AND i.return_date IS NULL
+        """, (issue_id,))
+        
+        result = cursor.fetchone()
+        if result:
+            logging.info(f"DEBUG: Найдена информация для возврата: {result}")
+            return result
+            
+        logging.info(f"DEBUG: Информация для возврата не найдена")
+        return None
+        
+    except Exception as e:
+        logging.error(f"Ошибка при получении информации для возврата: {e}")
+        return None
+    finally:
+        conn.close()
+
+def complete_return(issue_id: int) -> bool:
+    """
+    Завершить возврат инструмента
+    """
+    try:
+        logging.info(f"DEBUG: Завершение возврата issue_id={issue_id}")
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        # Получаем информацию о выдаче
+        cursor.execute("""
+            SELECT tool_id, employee_name
+            FROM issued_tools
+            WHERE id = ? AND return_date IS NULL
+        """, (issue_id,))
+        
+        issue_info = cursor.fetchone()
+        if not issue_info:
+            logging.error(f"DEBUG: Не найдена информация о выдаче {issue_id}")
+            return False
+            
+        tool_id, employee_name = issue_info
+        
+        # Обновляем статус инструмента
+        cursor.execute("""
+            UPDATE tools
+            SET status = 'available'
+            WHERE id = ?
+        """, (tool_id,))
+        
+        # Обновляем запись о выдаче
+        cursor.execute("""
+            UPDATE issued_tools
+            SET return_date = datetime('now')
+            WHERE id = ?
+        """, (issue_id,))
+        
+        # Добавляем запись в историю
+        cursor.execute("""
+            INSERT INTO tool_history (tool_id, action, employee_name, timestamp)
+            VALUES (?, 'return', ?, datetime('now'))
+        """, (tool_id, employee_name))
+        
+        conn.commit()
+        logging.info(f"DEBUG: Возврат успешно завершен")
+        return True
+        
+    except Exception as e:
+        logging.error(f"Ошибка при завершении возврата: {e}")
+        if conn:
+            conn.rollback()
+        return False
+    finally:
+        if conn:
+            conn.close()
 
 def return_tool(tool_id, employee_name):
     """Возвращает инструмент"""
@@ -515,69 +608,5 @@ def get_all_issue_requests():
         logger.error(f"Ошибка при получении списка запросов: {e}")
         return []
 
-def get_return_info(tool_id: int):
-    """Получить информацию для возврата инструмента"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT i.id as issue_id, t.id as tool_id, t.name, i.employee_name,
-                   COALESCE(strftime('%Y-%m-%d', i.issue_date), date('now')) as issue_date
-            FROM tools t
-            JOIN issued_tools i ON t.id = i.tool_id
-            WHERE t.id = ? AND i.return_date IS NULL
-            ORDER BY i.issue_date DESC
-            LIMIT 1
-        ''', (tool_id,))
-        return_info = cursor.fetchone()
-        if return_info:
-            logger.info(f"DEBUG: Найдена информация для возврата инструмента {tool_id}: {return_info}")
-        else:
-            logger.error(f"DEBUG: Не найдена информация для возврата инструмента {tool_id}")
-        conn.close()
-        return return_info
-    except Exception as e:
-        logger.error(f"Ошибка при получении информации для возврата инструмента: {e}")
-        return None
-
-def complete_return(issue_id: int):
-    """Завершает возврат инструмента"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        
-        # Получаем информацию о выдаче
-        cursor.execute('''
-            SELECT i.tool_id, i.employee_name
-            FROM issued_tools i
-            WHERE i.id = ?
-        ''', (issue_id,))
-        issue_info = cursor.fetchone()
-        
-        if not issue_info:
-            logger.error(f"DEBUG: Не найдена информация о выдаче с ID {issue_id}")
-            return False
-            
-        # Обновляем статус инструмента
-        cursor.execute('UPDATE tools SET status = ? WHERE id = ?', ('available', issue_info[0]))
-        
-        # Закрываем запись о выдаче
-        cursor.execute('''
-            UPDATE issued_tools 
-            SET return_date = CURRENT_TIMESTAMP 
-            WHERE id = ?
-        ''', (issue_id,))
-        
-        # Добавляем запись в историю
-        cursor.execute('''
-            INSERT INTO tool_history (tool_id, action, employee_name)
-            VALUES (?, ?, ?)
-        ''', (issue_info[0], 'returned', issue_info[1]))
-        
-        conn.commit()
-        logger.info(f"DEBUG: Возврат инструмента {issue_info[0]} завершен успешно")
-        conn.close()
-        return True
-    except Exception as e:
-        logger.error(f"Ошибка при завершении возврата инструмента: {e}")
-        return False
+def get_db_connection():
+    return sqlite3.connect(DB_PATH)
