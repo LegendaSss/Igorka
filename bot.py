@@ -29,6 +29,15 @@ dp = Dispatcher(bot, storage=storage)
 # Устанавливаем экземпляр бота как текущий
 Bot.set_current(bot)
 
+# Проверяем содержимое базы данных при запуске
+logger.info("Проверка базы данных при запуске...")
+tools = get_tools()
+logger.info(f"Количество инструментов в базе: {len(tools)}")
+if tools:
+    logger.info("Примеры инструментов:")
+    for tool in tools[:5]:  # Показываем первые 5 инструментов
+        logger.info(f"- {tool}")
+
 # Создание таблиц
 create_tables()
 

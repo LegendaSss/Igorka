@@ -123,24 +123,23 @@ def get_tools():
 
 def get_issued_tools():
     """Получает список выданных инструментов"""
-    # Определяем путь к базе данных
-    db_path = os.path.join(os.getenv('DATA_DIR', ''), 'tools.db')
-    if not db_path:
-        db_path = 'tools.db'
-    
-    conn = sqlite3.connect(db_path)
+    logger.info("DEBUG: Получение списка выданных инструментов")
+    conn = sqlite3.connect(os.path.join(os.getenv('DATA_DIR', ''), 'tools.db'))
     cursor = conn.cursor()
     
     try:
         cursor.execute('''
-            SELECT t.id, t.name, i.employee_name, i.issue_date, i.expected_return_date
-            FROM tools t
-            JOIN issued_tools i ON t.id = i.tool_id
+            SELECT t.name, i.employee_name, i.issue_date, i.return_date
+            FROM issued_tools i
+            JOIN tools t ON i.tool_id = t.id
             WHERE i.return_date IS NULL
         ''')
-        return cursor.fetchall()
+        
+        issued_tools = cursor.fetchall()
+        logger.info(f"DEBUG: Получено {len(issued_tools)} выданных инструментов")
+        return issued_tools
     except Exception as e:
-        logger.error(f"Ошибка при получении выданных инструментов: {e}")
+        logger.error(f"Ошибка при получении выданных инструментов: {str(e)}")
         return []
     finally:
         conn.close()
