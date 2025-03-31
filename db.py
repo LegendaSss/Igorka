@@ -160,14 +160,20 @@ def get_issued_tool_by_id(tool_id: int):
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute('''
-            SELECT t.id, t.name, i.employee_name,
+            SELECT i.id, t.name, i.employee_name,
                    COALESCE(strftime('%Y-%m-%d', i.issue_date), date('now')) as issue_date,
                    COALESCE(strftime('%Y-%m-%d', i.expected_return_date), date('now', '+7 days')) as expected_return_date
             FROM tools t
             JOIN issued_tools i ON t.id = i.tool_id
             WHERE t.id = ? AND i.return_date IS NULL
+            ORDER BY i.issue_date DESC
+            LIMIT 1
         ''', (tool_id,))
         issued_tool = cursor.fetchone()
+        if issued_tool:
+            logger.info(f"DEBUG: Найден выданный инструмент: {issued_tool}")
+        else:
+            logger.error(f"DEBUG: Не найден выданный инструмент с ID {tool_id}")
         conn.close()
         return issued_tool
     except Exception as e:
@@ -458,14 +464,24 @@ def get_tool_by_id(tool_id: int):
 def update_tool_status(tool_id: int, status: str):
     """Обновляет статус инструмента"""
     try:
-        with DatabaseConnection() as cursor:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        # Обновляем статус инструмента
+        cursor.execute('UPDATE tools SET status = ? WHERE id = ?', (status, tool_id))
+        
+        # Если статус 'available', закрываем все открытые записи о выдаче
+        if status == 'available':
             cursor.execute('''
-                UPDATE tools
-                SET status = ?
-                WHERE id = ?
-            ''', (status, tool_id))
-            cursor.connection.commit()
-            return True
+                UPDATE issued_tools 
+                SET return_date = CURRENT_TIMESTAMP 
+                WHERE tool_id = ? AND return_date IS NULL
+            ''', (tool_id,))
+            
+        conn.commit()
+        logger.info(f"DEBUG: Статус инструмента {tool_id} обновлен на {status}")
+        conn.close()
+        return True
     except Exception as e:
         logger.error(f"Ошибка при обновлении статуса инструмента: {e}")
         return False
@@ -498,3 +514,72 @@ def get_all_issue_requests():
     except Exception as e:
         logger.error(f"Ошибка при получении списка запросов: {e}")
         return []
+
+def get_return_info(tool_id: int):
+    """Получить информацию для возврата инструмента"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT t.id, t.name, i.employee_name, i.id as issue_id,
+                   COALESCE(strftime('%Y-%m-%d', i.issue_date), date('now')) as issue_date
+            FROM tools t
+            JOIN issued_tools i ON t.id = i.tool_id
+            WHERE t.id = ? AND i.return_date IS NULL
+            ORDER BY i.issue_date DESC
+            LIMIT 1
+        ''', (tool_id,))
+        return_info = cursor.fetchone()
+        if return_info:
+            logger.info(f"DEBUG: Найдена информация для возврата инструмента {tool_id}: {return_info}")
+        else:
+            logger.error(f"DEBUG: Не найдена информация для возврата инструмента {tool_id}")
+        conn.close()
+        return return_info
+    except Exception as e:
+        logger.error(f"Ошибка при получении информации для возврата инструмента: {e}")
+        return None
+
+def complete_return(tool_id: int):
+    """Завершает возврат инструмента"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        # Получаем информацию о выдаче
+        cursor.execute('''
+            SELECT i.id, i.employee_name
+            FROM issued_tools i
+            WHERE i.tool_id = ? AND i.return_date IS NULL
+            ORDER BY i.issue_date DESC
+            LIMIT 1
+        ''', (tool_id,))
+        issue_info = cursor.fetchone()
+        
+        if not issue_info:
+            logger.error(f"DEBUG: Не найдена информация о выдаче инструмента {tool_id}")
+            return False
+            
+        # Обновляем статус инструмента
+        cursor.execute('UPDATE tools SET status = ? WHERE id = ?', ('available', tool_id))
+        
+        # Закрываем запись о выдаче
+        cursor.execute('''
+            UPDATE issued_tools 
+            SET return_date = CURRENT_TIMESTAMP 
+            WHERE id = ?
+        ''', (issue_info[0],))
+        
+        # Добавляем запись в историю
+        cursor.execute('''
+            INSERT INTO tool_history (tool_id, action, employee_name)
+            VALUES (?, ?, ?)
+        ''', (tool_id, 'returned', issue_info[1]))
+        
+        conn.commit()
+        logger.info(f"DEBUG: Возврат инструмента {tool_id} завершен успешно")
+        conn.close()
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка при завершении возврата инструмента: {e}")
+        return False
