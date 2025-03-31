@@ -539,6 +539,13 @@ async def process_return_photo(message: types.Message, state: FSMContext):
     finally:
         await state.finish()
 
+def get_admin_keyboard():
+    keyboard = InlineKeyboardMarkup()
+    keyboard.add(InlineKeyboardButton("📋 Выданные инструменты", callback_data="admin_issued"))
+    keyboard.add(InlineKeyboardButton("📊 Отчет", callback_data="admin_report"))
+    keyboard.add(InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu"))
+    return keyboard
+
 @dp.callback_query_handler(lambda c: c.data.startswith("admin_"))
 async def process_admin_action(callback_query: types.CallbackQuery):
     # Сразу отвечаем на callback
@@ -556,12 +563,14 @@ async def process_admin_action(callback_query: types.CallbackQuery):
             await callback_query.message.edit_text("Нет выданных инструментов", reply_markup=get_admin_keyboard())
             return
 
-        text = "Выданные инструменты:\n\n"
+        text = "📋 *Выданные инструменты*\n\n"
         for tool in issued_tools:
-            tool_id, name, employee, issue_date, expected_return, quantity = tool
-            text += f"🔧 {name}\n👤 {employee}\n📅 {issue_date}\n\n"
+            tool_id, name, employee, issue_date = tool
+            text += f"🔧 *{name}*\n"
+            text += f"👤 Сотрудник: _{employee}_\n"
+            text += f"📅 Выдан: {issue_date}\n\n"
         
-        await callback_query.message.edit_text(text, reply_markup=get_admin_keyboard())
+        await callback_query.message.edit_text(text, reply_markup=get_admin_keyboard(), parse_mode="Markdown")
     elif action == "report":
         tools = get_tools()
         issued = get_issued_tools()
