@@ -484,12 +484,23 @@ async def show_return_menu(callback_query: types.CallbackQuery):
 
         keyboard = InlineKeyboardMarkup(row_width=1)
         for tool in issued_tools:
-            tool_id, name, employee, issue_date, expected_return = tool
-            issue_date = datetime.strptime(issue_date, '%Y-%m-%d').strftime('%d.%m.%Y')
-            expected_return = datetime.strptime(expected_return, '%Y-%m-%d').strftime('%d.%m.%Y')
-            
-            button_text = f"🔧 {name} - {employee} (до {expected_return})"
-            keyboard.add(InlineKeyboardButton(button_text, callback_data=f"return_tool_{tool_id}"))
+            try:
+                tool_id, name, employee, issue_date, expected_return = tool
+                if issue_date:
+                    issue_date = datetime.strptime(issue_date, '%Y-%m-%d').strftime('%d.%m.%Y')
+                else:
+                    issue_date = "Дата не указана"
+                    
+                if expected_return:
+                    expected_return = datetime.strptime(expected_return, '%Y-%m-%d').strftime('%d.%m.%Y')
+                else:
+                    expected_return = "Дата не указана"
+                
+                button_text = f"🔧 {name} - {employee} (до {expected_return})"
+                keyboard.add(InlineKeyboardButton(button_text, callback_data=f"return_tool_{tool_id}"))
+            except Exception as e:
+                logger.error(f"Ошибка при обработке инструмента: {e}")
+                continue
 
         keyboard.add(InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu"))
 
@@ -529,31 +540,49 @@ async def return_tool(callback_query: types.CallbackQuery):
             )
             return
 
-        tool_id, tool_name, employee, issue_date, expected_return = issued_tool
-        issue_date = datetime.strptime(issue_date, '%Y-%m-%d').strftime('%d.%m.%Y')
-        expected_return = datetime.strptime(expected_return, '%Y-%m-%d').strftime('%d.%m.%Y')
+        try:
+            tool_id, tool_name, employee, issue_date, expected_return = issued_tool
+            if issue_date:
+                issue_date = datetime.strptime(issue_date, '%Y-%m-%d').strftime('%d.%m.%Y')
+            else:
+                issue_date = "Дата не указана"
+                
+            if expected_return:
+                expected_return = datetime.strptime(expected_return, '%Y-%m-%d').strftime('%d.%m.%Y')
+            else:
+                expected_return = "Дата не указана"
 
-        # Сохраняем ID инструмента в state
-        await ToolReturnState.waiting_for_photo.set()
-        state = dp.current_state(user=callback_query.from_user.id)
-        async with state.proxy() as data:
-            data['tool_id'] = tool_id
-            data['tool_name'] = tool_name
-            data['employee'] = employee
+            # Сохраняем ID инструмента в state
+            await ToolReturnState.waiting_for_photo.set()
+            state = dp.current_state(user=callback_query.from_user.id)
+            async with state.proxy() as data:
+                data['tool_id'] = tool_id
+                data['tool_name'] = tool_name
+                data['employee'] = employee
 
-        await callback_query.message.edit_text(
-            f"📸 *Возврат инструмента*\n\n"
-            f"🛠️ Инструмент: *{tool_name}*\n"
-            f"👤 Сотрудник: {employee}\n"
-            f"📅 Дата выдачи: {issue_date}\n"
-            f"⚠️ Вернуть до: {expected_return}\n\n"
-            "Пожалуйста, сфотографируйте инструмент для подтверждения возврата.\n"
-            "Фото должно быть четким и показывать состояние инструмента.",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup().add(
-                InlineKeyboardButton("❌ Отмена", callback_data="cancel_return")
+            await callback_query.message.edit_text(
+                f"📸 *Возврат инструмента*\n\n"
+                f"🛠️ Инструмент: *{tool_name}*\n"
+                f"👤 Сотрудник: {employee}\n"
+                f"📅 Дата выдачи: {issue_date}\n"
+                f"⚠️ Вернуть до: {expected_return}\n\n"
+                "Пожалуйста, сфотографируйте инструмент для подтверждения возврата.\n"
+                "Фото должно быть четким и показывать состояние инструмента.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup().add(
+                    InlineKeyboardButton("❌ Отмена", callback_data="cancel_return")
+                )
             )
-        )
+        except Exception as e:
+            logger.error(f"Ошибка при обработке дат: {e}")
+            await callback_query.message.edit_text(
+                "❌ Произошла ошибка при обработке информации об инструменте.\n"
+                "Пожалуйста, попробуйте позже или обратитесь к администратору.",
+                reply_markup=InlineKeyboardMarkup().add(
+                    InlineKeyboardButton("🔙 Назад", callback_data="return"),
+                    InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
+                )
+            )
 
     except ValueError as e:
         logger.error(f"Некорректный ID инструмента: {e}")
@@ -561,7 +590,7 @@ async def return_tool(callback_query: types.CallbackQuery):
             "❌ Произошла ошибка при обработке запроса.\n"
             "Пожалуйста, попробуйте еще раз.",
             reply_markup=InlineKeyboardMarkup().add(
-                InlineKeyboardButton("🔙 Назад", callback_data="return"),
+                InlineKeyboardButton("🔙 Назад", callback_query="return"),
                 InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
             )
         )

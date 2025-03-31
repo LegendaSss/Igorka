@@ -122,8 +122,8 @@ def get_issued_tools():
     try:
         cursor.execute('''
             SELECT t.id, t.name, i.employee_name, 
-                   strftime('%Y-%m-%d', i.issue_date) as issue_date, 
-                   strftime('%Y-%m-%d', i.expected_return_date) as expected_return_date
+                   COALESCE(strftime('%Y-%m-%d', i.issue_date), date('now')) as issue_date,
+                   COALESCE(strftime('%Y-%m-%d', i.expected_return_date), date('now', '+7 days')) as expected_return_date
             FROM tools t
             JOIN issued_tools i ON t.id = i.tool_id
             WHERE i.return_date IS NULL
@@ -132,7 +132,7 @@ def get_issued_tools():
         logger.info(f"DEBUG: Получено {len(issued_tools)} выданных инструментов")
         return issued_tools
     except Exception as e:
-        logger.error(f"Ошибка при получении выданных инструментов: {str(e)}")
+        logger.error(f"Ошибка при получении списка выданных инструментов: {e}")
         return []
     finally:
         conn.close()
@@ -411,14 +411,14 @@ def get_issued_tool_by_id(tool_id: int) -> tuple:
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute('''
-            SELECT t.id, t.name, i.employee_name, i.issue_date, i.expected_return_date
+            SELECT t.id, t.name, i.employee_name,
+                   COALESCE(strftime('%Y-%m-%d', i.issue_date), date('now')) as issue_date,
+                   COALESCE(strftime('%Y-%m-%d', i.expected_return_date), date('now', '+7 days')) as expected_return_date
             FROM tools t
             JOIN issued_tools i ON t.id = i.tool_id
             WHERE t.id = ? AND i.return_date IS NULL
         ''', (tool_id,))
-        result = cursor.fetchone()
-        conn.close()
-        return result
+        return cursor.fetchone()
     except Exception as e:
         logger.error(f"Ошибка при получении информации о выданном инструменте: {e}")
         return None
