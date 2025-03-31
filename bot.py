@@ -151,50 +151,56 @@ async def show_help(callback_query: types.CallbackQuery):
 
 @dp.callback_query_handler(lambda c: c.data == "main_menu")
 async def main_menu(callback_query: types.CallbackQuery):
-    # Сразу отвечаем на callback
-    await callback_query.answer()
-    
-    keyboard = InlineKeyboardMarkup(row_width=2)
-    
-    # Обычные кнопки для всех пользователей
-    keyboard.add(
-        InlineKeyboardButton("🛠️ Инструменты", callback_data="tools"),
-        InlineKeyboardButton("🔍 Поиск", callback_data="search_tools")
-    )
-    keyboard.add(
-        InlineKeyboardButton("📸 Вернуть", callback_data="return"),
-        InlineKeyboardButton("ℹ️ Помощь", callback_data="help")
-    )
-    
-    # Добавляем кнопки админ-панели, если это администратор
-    if callback_query.from_user.id == ADMIN_ID:
+    try:
+        keyboard = InlineKeyboardMarkup(row_width=2)
         keyboard.add(
-            InlineKeyboardButton("📋 Выданные", callback_data="admin_issued"),
-            InlineKeyboardButton("📊 Отчёт", callback_data="admin_report")
+            InlineKeyboardButton("🛠️ Инструменты", callback_data="tools"),
+            InlineKeyboardButton("🔍 Поиск", callback_data="search_tools")
         )
         keyboard.add(
-            InlineKeyboardButton("📜 История", callback_data="admin_history"),
-            InlineKeyboardButton("⚠️ Просрочки", callback_data="admin_overdue")
+            InlineKeyboardButton("📸 Вернуть", callback_data="return"),
+            InlineKeyboardButton("ℹ️ Помощь", callback_data="help")
+        )
+        
+        if callback_query.from_user.id == ADMIN_ID:
+            keyboard.add(
+                InlineKeyboardButton("📋 Выданные", callback_data="admin_issued"),
+                InlineKeyboardButton("📊 Отчёт", callback_data="admin_report")
+            )
+            keyboard.add(
+                InlineKeyboardButton("📜 История", callback_data="admin_history"),
+                InlineKeyboardButton("⚠️ Просрочки", callback_data="admin_overdue")
+            )
+
+        menu_text = (
+            "🤖 *Главное меню*\n\n"
+            "Выберите нужное действие:\n\n"
+            "┌ 🛠️ *Инструменты* - список всех инструментов\n"
+            "├ 🔍 *Поиск* - поиск по названию\n"
+            "├ 📸 *Вернуть* - возврат инструмента\n"
+            "└ ℹ️ *Помощь* - справка по работе\n"
         )
 
-    menu_text = (
-        "🤖 *Главное меню*\n\n"
-        "Выберите нужное действие:\n\n"
-        "┌ 🛠️ *Инструменты* - список всех инструментов\n"
-        "├ 🔍 *Поиск* - поиск по названию\n"
-        "├ 📸 *Вернуть* - возврат инструмента\n"
-        "└ ℹ️ *Помощь* - справка по работе\n"
-    )
+        # Добавляем информацию об админ-функциях для администратора
+        if callback_query.from_user.id == ADMIN_ID:
+            menu_text += "\n*Функции администратора:*\n\n"
+            menu_text += "┌ 📋 *Выданные* - список выданных\n"
+            menu_text += "├ 📊 *Отчёт* - общая статистика\n"
+            menu_text += "├ 📜 *История* - история операций\n"
+            menu_text += "└ ⚠️ *Просрочки* - просроченные\n"
 
-    # Добавляем информацию об админ-функциях для администратора
-    if callback_query.from_user.id == ADMIN_ID:
-        menu_text += "\n*Функции администратора:*\n\n"
-        menu_text += "┌ 📋 *Выданные* - список выданных\n"
-        menu_text += "├ 📊 *Отчёт* - общая статистика\n"
-        menu_text += "├ 📜 *История* - история операций\n"
-        menu_text += "└ ⚠️ *Просрочки* - просроченные\n"
-
-    await callback_query.message.reply(menu_text, reply_markup=keyboard, parse_mode="Markdown")
+        await callback_query.message.reply(menu_text, reply_markup=keyboard, parse_mode="Markdown")
+        
+        try:
+            await callback_query.answer()
+        except:
+            logging.warning("Не удалось ответить на callback_query (возможно, истек срок действия)")
+    except Exception as e:
+        logging.error(f"Ошибка в main_menu: {e}")
+        try:
+            await callback_query.answer("Произошла ошибка. Попробуйте еще раз.")
+        except:
+            pass
 
 @dp.callback_query_handler(lambda c: c.data == "tools" or c.data.startswith("tools_page_"))
 async def show_tools(callback_query: types.CallbackQuery):
@@ -276,25 +282,35 @@ async def show_tools(callback_query: types.CallbackQuery):
 
 @dp.callback_query_handler(lambda c: c.data.startswith("select_tool_"))
 async def select_tool(callback_query: types.CallbackQuery):
-    tool_id = int(callback_query.data.split("_")[2])
-    
-    # Получаем состояние для текущего пользователя
-    state = dp.current_state(user=callback_query.from_user.id)
-    
-    # Сохраняем ID инструмента в состоянии
-    await state.update_data(tool_id=tool_id)
-    
-    # Переходим в состояние ожидания ФИО
-    await state.set_state(ToolIssueState.waiting_for_fullname.state)
-    
-    await callback_query.message.answer(
-        "👤 *Получение инструмента*\n\n"
-        "Пожалуйста, введите ваше ФИО:",
-        parse_mode="Markdown"
-    )
-    
-    # Отвечаем на callback_query, чтобы убрать часики
-    await callback_query.answer()
+    try:
+        tool_id = int(callback_query.data.split("_")[2])
+        
+        # Получаем состояние для текущего пользователя
+        state = dp.current_state(user=callback_query.from_user.id)
+        
+        # Сохраняем ID инструмента в состоянии
+        await state.update_data(tool_id=tool_id)
+        
+        # Переходим в состояние ожидания ФИО
+        await state.set_state(ToolIssueState.waiting_for_fullname.state)
+        
+        await callback_query.message.answer(
+            "👤 *Получение инструмента*\n\n"
+            "Пожалуйста, введите ваше ФИО:",
+            parse_mode="Markdown"
+        )
+        
+        # Отвечаем на callback_query, чтобы убрать часики
+        try:
+            await callback_query.answer()
+        except:
+            logging.warning("Не удалось ответить на callback_query (возможно, истек срок действия)")
+    except Exception as e:
+        logging.error(f"Ошибка в select_tool: {e}")
+        try:
+            await callback_query.answer("Произошла ошибка. Попробуйте еще раз.")
+        except:
+            pass
 
 @dp.message_handler(state=ToolIssueState.waiting_for_fullname)
 async def process_employee_fullname(message: types.Message):
