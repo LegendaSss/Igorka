@@ -3,7 +3,9 @@ services:
     name: telegram-bot
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python bot.py
+    startCommand: |
+      python populate_database.py
+      python bot.py
     envVars:
       - key: API_TOKEN
         sync: false
