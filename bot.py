@@ -1065,6 +1065,7 @@ if __name__ == '__main__':
 
 @dp.message_handler(content_types=['photo'], state=ReturnToolStates.waiting_for_photo)
 async def process_return_photo(message: types.Message, state: FSMContext):
+    """Обработчик фотографии для возврата инструмента"""
     try:
         logging.info(f"DEBUG: Получено фото для возврата инструмента")
         async with state.proxy() as data:
@@ -1111,18 +1112,25 @@ async def process_return_photo(message: types.Message, state: FSMContext):
             await bot.send_photo(
                 ADMIN_ID,
                 photo.file_id,
-                caption=f"📸 Фото для возврата инструмента:\n"
-                       f"🔧 Инструмент: {tool_name}\n"
-                       f"👤 Сотрудник: {employee_name}\n\n"
-                       f"📏 Размер фото: {photo.width}x{photo.height}",
+                caption=(
+                    f"📸 Фото для возврата инструмента\n\n"
+                    f"🔧 Инструмент: {tool_name}\n"
+                    f"👤 Сотрудник: {employee_name}\n"
+                    f"📅 Дата: {datetime.now().strftime('%d.%m.%Y %H:%M')}\n\n"
+                    f"✅ Проверьте:\n"
+                    f"- Общее состояние инструмента\n"
+                    f"- Серийный номер (если есть)\n"
+                    f"- Комплектность"
+                ),
                 reply_markup=markup
             )
             logging.info(f"DEBUG: Фото отправлено администратору для проверки")
 
             # Уведомляем пользователя
             await message.reply(
-                "📸 Фото отправлено на проверку администратору.\n"
-                "Пожалуйста, ожидайте подтверждения.",
+                "📸 Фото успешно отправлено на проверку!\n\n"
+                "⏳ Пожалуйста, ожидайте решения администратора.\n"
+                "Вы получите уведомление о результате проверки.",
                 reply_markup=InlineKeyboardMarkup().add(
                     InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
                 )
@@ -1145,6 +1153,7 @@ async def process_return_photo(message: types.Message, state: FSMContext):
 
 @dp.callback_query_handler(lambda c: c.data.startswith('approve_return_'))
 async def approve_return(callback_query: types.CallbackQuery):
+    """Обработчик подтверждения возврата администратором"""
     try:
         logging.info(f"DEBUG: Получен callback для подтверждения возврата: {callback_query.data}")
         # Parse callback data
@@ -1153,17 +1162,17 @@ async def approve_return(callback_query: types.CallbackQuery):
             logging.error(f"DEBUG: Неверный формат callback data: {callback_query.data}")
             await callback_query.answer("❌ Ошибка: неверный формат данных")
             return
-            
+
         issue_id = int(data[2])
         user_id = int(data[3])
-        
+
         # Получаем информацию о возврате
         return_info = get_return_info(issue_id)
         if not return_info:
             logging.error(f"DEBUG: Не найдена информация о возврате с ID {issue_id}")
             await callback_query.answer("❌ Ошибка: информация о возврате не найдена")
             return
-            
+
         # Завершаем возврат
         if complete_return(issue_id):
             # Уведомляем администратора
@@ -1176,8 +1185,8 @@ async def approve_return(callback_query: types.CallbackQuery):
             # Уведомляем пользователя
             await bot.send_message(
                 user_id,
-                f"✅ Возврат инструмента подтвержден.\n"
-                "Спасибо за использование!",
+                f"✅ Возврат инструмента \"{return_info[0]}\" подтвержден!\n\n"
+                "Спасибо за своевременный возврат инструмента.",
                 reply_markup=InlineKeyboardMarkup().add(
                     InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
                 )
@@ -1211,6 +1220,7 @@ async def approve_return(callback_query: types.CallbackQuery):
 
 @dp.callback_query_handler(lambda c: c.data.startswith('reject_return_'))
 async def reject_return(callback_query: types.CallbackQuery):
+    """Обработчик отклонения возврата администратором"""
     try:
         logging.info(f"DEBUG: Получен callback для отклонения возврата: {callback_query.data}")
         # Parse callback data
@@ -1240,13 +1250,16 @@ async def reject_return(callback_query: types.CallbackQuery):
         # Уведомляем пользователя
         await bot.send_message(
             user_id,
-            f"❌ Возврат инструмента отклонен.\n\n"
+            f"❌ Возврат инструмента \"{return_info[0]}\" отклонен.\n\n"
             "Причины отклонения могут быть следующими:\n"
             "- Нечеткое или плохо освещенное фото\n"
             "- Не видно состояние инструмента\n"
             "- Не видно серийный номер\n"
             "- Некомплектность инструмента\n\n"
-            "Пожалуйста, проверьте состояние инструмента и сделайте новое фото.",
+            "Пожалуйста:\n"
+            "1. Проверьте состояние и комплектность инструмента\n"
+            "2. Сделайте новое четкое фото\n"
+            "3. Повторите попытку возврата",
             reply_markup=InlineKeyboardMarkup(row_width=1).add(
                 InlineKeyboardButton("🔄 Попробовать снова", callback_data=f"return_tool_{return_info[1]}"),
                 InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
