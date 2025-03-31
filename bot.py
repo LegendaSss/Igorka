@@ -551,31 +551,17 @@ async def process_admin_action(callback_query: types.CallbackQuery):
     action = callback_query.data.replace("admin_", "")
     
     if action == "issued":
-        issued = get_issued_tools()
-        if not issued:
-            await callback_query.message.reply(
-                "📋 *Выданные инструменты*\n\n"
-                "Нет выданных инструментов.",
-                parse_mode="Markdown"
-            )
+        issued_tools = get_issued_tools()
+        if not issued_tools:
+            await callback_query.message.edit_text("Нет выданных инструментов", reply_markup=get_admin_keyboard())
             return
-            
-        response = "📋 *Выданные инструменты*\n\n"
-        for tool in issued:
-            tool_id, name, employee, issue_date, expected_return = tool
-            issue_date = datetime.strptime(issue_date, '%Y-%m-%d %H:%M:%S').strftime('%d.%m.%Y')
-            expected_return = datetime.strptime(expected_return, '%Y-%m-%d %H:%M:%S').strftime('%d.%m.%Y') if expected_return else "Не указана"
-            
-            response += f"┌ *{name}*\n"
-            response += f"├ Кому: _{employee}_\n"
-            response += f"├ Выдан: {issue_date}\n"
-            response += f"└ Ожидается: {expected_return}\n\n"
-            
-        keyboard = InlineKeyboardMarkup()
-        keyboard.add(InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu"))
+
+        text = "Выданные инструменты:\n\n"
+        for tool in issued_tools:
+            tool_id, name, employee, issue_date, expected_return, quantity = tool
+            text += f"🔧 {name}\n👤 {employee}\n📅 {issue_date}\n\n"
         
-        await callback_query.message.reply(response, reply_markup=keyboard, parse_mode="Markdown")
-        
+        await callback_query.message.edit_text(text, reply_markup=get_admin_keyboard())
     elif action == "report":
         tools = get_tools()
         issued = get_issued_tools()
