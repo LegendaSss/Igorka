@@ -607,20 +607,48 @@ async def process_admin_action(callback_query: types.CallbackQuery):
 
 
 # Добавляем веб-сервер
-async def on_startup(dp):
-    logging.info('Bot started')
+WEBHOOK_HOST = 'https://igorka.onrender.com'
+WEBHOOK_PATH = f'/webhook/{API_TOKEN}'
+WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
+
+app = web.Application()
+
+async def on_startup(app):
+    """Установка вебхука при запуске"""
+    webhook_info = await bot.get_webhook_info()
+    if webhook_info.url != WEBHOOK_URL:
+        await bot.set_webhook(WEBHOOK_URL)
+    logger.info("Bot started")
+
+async def on_shutdown(app):
+    """Отключение вебхука при выключении"""
+    await bot.delete_webhook()
+    await bot.close()
+    logger.info("Bot stopped")
 
 async def handle_webhook(request):
-    return web.Response(text='Bot is running')
+    """Обработчик вебхука"""
+    if request.match_info.get('token') != API_TOKEN:
+        return web.Response(status=403)
+    
+    request_data = await request.json()
+    update = types.Update(**request_data)
+    await dp.process_update(update)
+    return web.Response(status=200)
 
-if __name__ == "__main__":
-    # Создаем приложение
-    app = web.Application()
-    app.router.add_get('/', handle_webhook)
+def setup_routes(app: web.Application):
+    app.router.add_post(WEBHOOK_PATH, handle_webhook)
+
+if __name__ == '__main__':
+    # Создаем таблицы при запуске
+    create_tables()
     
-    # Настраиваем веб-сервер
-    port = int(os.environ.get('PORT', 8080))
+    # Настраиваем маршруты
+    setup_routes(app)
     
-    # Запускаем бота и веб-сервер
-    executor.start_polling(dp, skip_updates=True, on_startup=on_startup)
-    web.run_app(app, host='0.0.0.0', port=port)
+    # Добавляем обработчики запуска и остановки
+    app.on_startup.append(on_startup)
+    app.on_shutdown.append(on_shutdown)
+    
+    # Запускаем веб-сервер
+    web.run_app(app, host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
