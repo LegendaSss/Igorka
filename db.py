@@ -403,3 +403,21 @@ def create_tool(name, quantity=1, description=None):
         return None
     finally:
         conn.close()
+
+def get_issued_tool_by_id(tool_id: int) -> tuple:
+    """Получить информацию о выданном инструменте по его ID"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT t.id, t.name, i.employee_name, i.issue_date, i.expected_return_date
+            FROM tools t
+            JOIN issued_tools i ON t.id = i.tool_id
+            WHERE t.id = ? AND i.return_date IS NULL
+        ''', (tool_id,))
+        result = cursor.fetchone()
+        conn.close()
+        return result
+    except Exception as e:
+        logger.error(f"Ошибка при получении информации о выданном инструменте: {e}")
+        return None

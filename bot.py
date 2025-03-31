@@ -464,13 +464,16 @@ async def process_search(message: types.Message, state: FSMContext):
     await state.finish()
 
 @dp.callback_query_handler(lambda c: c.data == "return")
-async def return_tool_request(callback_query: types.CallbackQuery):
+async def show_return_menu(callback_query: types.CallbackQuery):
     try:
+        logger.info("DEBUG: Получение списка выданных инструментов")
         issued_tools = get_issued_tools()
+        logger.info(f"DEBUG: Получено {len(issued_tools)} выданных инструментов")
+
         if not issued_tools:
             await callback_query.message.edit_text(
-                "📋 *Выданные инструменты*\n\n"
-                "На данный момент нет выданных инструментов.",
+                "❌ *Нет выданных инструментов*\n\n"
+                "У вас нет инструментов для возврата.",
                 reply_markup=InlineKeyboardMarkup().add(
                     InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
                 )
@@ -478,21 +481,34 @@ async def return_tool_request(callback_query: types.CallbackQuery):
             return
 
         keyboard = InlineKeyboardMarkup(row_width=1)
+        text = "📋 *Выданные инструменты:*\n\n"
+
         for tool in issued_tools:
-            tool_id, name, employee, issue_date = tool
-            issue_date = issue_date.split()[0] if issue_date else "Дата неизвестна"
-            button_text = f"📦 {name} (выдан: {issue_date})"
-            keyboard.add(InlineKeyboardButton(button_text, callback_data=f"return_tool_{tool_id}"))
-        
+            tool_id, tool_name, employee, issue_date, expected_return = tool
+            # Форматируем даты для отображения
+            issue_date = datetime.strptime(issue_date, '%Y-%m-%d').strftime('%d.%m.%Y')
+            expected_return = datetime.strptime(expected_return, '%Y-%m-%d').strftime('%d.%m.%Y')
+            
+            text += f"🛠️ *{tool_name}*\n"
+            text += f"👤 Выдан: {employee}\n"
+            text += f"📅 Дата выдачи: {issue_date}\n"
+            text += f"⚠️ Вернуть до: {expected_return}\n\n"
+            
+            keyboard.add(InlineKeyboardButton(
+                f"📥 Вернуть: {tool_name}",
+                callback_data=f"return_tool_{tool_id}"
+            ))
+
         keyboard.add(InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu"))
-        
+
         await callback_query.message.edit_text(
-            "📋 *Выберите инструмент для возврата:*\n\n"
-            "Нажмите на инструмент, который хотите вернуть.",
-            reply_markup=keyboard
+            text,
+            reply_markup=keyboard,
+            parse_mode="Markdown"
         )
+
     except Exception as e:
-        logger.error(f"Ошибка при получении списка выданных инструментов: {e}")
+        logger.error(f"Ошибка при показе меню возврата: {e}")
         await callback_query.message.edit_text(
             "❌ Произошла ошибка при получении списка инструментов.\n"
             "Пожалуйста, попробуйте позже или обратитесь к администратору.",
@@ -502,62 +518,64 @@ async def return_tool_request(callback_query: types.CallbackQuery):
         )
 
 @dp.callback_query_handler(lambda c: c.data.startswith("return_tool_"))
-async def process_return_tool(callback_query: types.CallbackQuery, state: FSMContext):
+async def return_tool(callback_query: types.CallbackQuery):
     try:
-        # Получаем ID инструмента из callback_data
         tool_id = int(callback_query.data.replace("return_tool_", ""))
-        
-        # Отвечаем на callback
-        await callback_query.answer()
-        
-        try:
-            # Получаем информацию о выданном инструменте
-            issued_tools = get_issued_tools()
-            tool_info = next((tool for tool in issued_tools if tool[0] == tool_id), None)
-            
-            if tool_info:
-                async with state.proxy() as data:
-                    data['return_tool_id'] = tool_id
-                    data['employee_name'] = tool_info[2]  # Сохраняем имя сотрудника
-                
-                await ToolReturnState.waiting_for_photo.set()
-                await callback_query.message.edit_text(
-                    "📸 Пожалуйста, отправьте фото инструмента.\n"
-                    "Фото должно быть четким и показывать состояние инструмента.",
-                    reply_markup=InlineKeyboardMarkup().add(
-                        InlineKeyboardButton("❌ Отмена", callback_data="cancel_return")
-                    )
-                )
-            else:
-                await callback_query.message.edit_text(
-                    "❌ Инструмент не найден в списке выданных.\n"
-                    "Возможно, он уже был возвращен.",
-                    reply_markup=InlineKeyboardMarkup().add(
-                        InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
-                    )
-                )
-        except Exception as e:
-            logger.error(f"Ошибка при проверке инструмента: {e}")
+        logger.info(f"DEBUG: Запрос на возврат инструмента {tool_id}")
+
+        # Получаем информацию о выданном инструменте
+        issued_tool = get_issued_tool_by_id(tool_id)
+        if not issued_tool:
             await callback_query.message.edit_text(
-                "❌ Произошла ошибка при проверке инструмента.\n"
-                "Пожалуйста, попробуйте позже или обратитесь к администратору.",
+                "❌ Инструмент не найден или уже возвращен.",
                 reply_markup=InlineKeyboardMarkup().add(
+                    InlineKeyboardButton("🔙 Назад", callback_data="return"),
                     InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
                 )
             )
+            return
+
+        tool_name = issued_tool[1]
+        employee = issued_tool[2]
+        issue_date = datetime.strptime(issued_tool[3], '%Y-%m-%d').strftime('%d.%m.%Y')
+        expected_return = datetime.strptime(issued_tool[4], '%Y-%m-%d').strftime('%d.%m.%Y')
+
+        # Сохраняем ID инструмента в state
+        await ToolReturnState.waiting_for_photo.set()
+        state = dp.current_state(user=callback_query.from_user.id)
+        async with state.proxy() as data:
+            data['tool_id'] = tool_id
+            data['tool_name'] = tool_name
+            data['employee'] = employee
+
+        await callback_query.message.edit_text(
+            f"📸 *Возврат инструмента*\n\n"
+            f"🛠️ Инструмент: *{tool_name}*\n"
+            f"👤 Сотрудник: {employee}\n"
+            f"📅 Дата выдачи: {issue_date}\n"
+            f"⚠️ Срок возврата: {expected_return}\n\n"
+            "Пожалуйста, сфотографируйте инструмент для подтверждения возврата.\n"
+            "Фото должно быть четким и показывать состояние инструмента.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup().add(
+                InlineKeyboardButton("❌ Отмена", callback_data="cancel_return")
+            )
+        )
+
     except ValueError as e:
         logger.error(f"Некорректный ID инструмента: {e}")
         await callback_query.message.edit_text(
-            "❌ Некорректный ID инструмента.\n"
+            "❌ Произошла ошибка при обработке запроса.\n"
             "Пожалуйста, попробуйте еще раз.",
             reply_markup=InlineKeyboardMarkup().add(
+                InlineKeyboardButton("🔙 Назад", callback_data="return"),
                 InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
             )
         )
     except Exception as e:
-        logger.error(f"Критическая ошибка при возврате инструмента: {e}")
+        logger.error(f"Ошибка при возврате инструмента: {e}")
         await callback_query.message.edit_text(
-            "❌ Произошла критическая ошибка.\n"
+            "❌ Произошла ошибка при обработке запроса.\n"
             "Пожалуйста, попробуйте позже или обратитесь к администратору.",
             reply_markup=InlineKeyboardMarkup().add(
                 InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
@@ -568,8 +586,9 @@ async def process_return_tool(callback_query: types.CallbackQuery, state: FSMCon
 async def process_return_photo(message: types.Message, state: FSMContext):
     try:
         async with state.proxy() as data:
-            tool_id = data['return_tool_id']
-            employee_name = data['employee_name']
+            tool_id = data['tool_id']
+            tool_name = data['tool_name']
+            employee = data['employee']
         
         # Сохраняем фото
         photo = message.photo[-1]  # Берем последнее (самое качественное) фото
@@ -577,7 +596,7 @@ async def process_return_photo(message: types.Message, state: FSMContext):
         
         try:
             # Пытаемся вернуть инструмент
-            if return_tool(tool_id, employee_name):
+            if return_tool(tool_id, employee):
                 await message.reply(
                     "✅ Инструмент успешно возвращен!\n"
                     "Спасибо за своевременный возврат.",
@@ -593,7 +612,7 @@ async def process_return_photo(message: types.Message, state: FSMContext):
                             ADMIN_ID,
                             photo=file_id,
                             caption=f"📸 Фото возвращенного инструмента\n"
-                                  f"👤 Сотрудник: {employee_name}"
+                                  f"👤 Сотрудник: {employee}"
                         )
                     except Exception as e:
                         logger.error(f"Ошибка при отправке фото администратору: {e}")
