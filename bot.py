@@ -23,12 +23,13 @@ logger = logging.getLogger(__name__)
 TOKEN = API_TOKEN
 ADMIN_ID = 1495719377  # ID администратора
 
-bot = Bot(token=TOKEN)
 storage = MemoryStorage()
+bot = Bot(token=TOKEN)
 dp = Dispatcher(bot, storage=storage)
 
 # Устанавливаем экземпляр бота как текущий
 Bot.set_current(bot)
+Dispatcher.set_current(dp)
 
 # Проверяем содержимое базы данных при запуске
 logger.info("Проверка базы данных при запуске...")
@@ -274,29 +275,40 @@ async def show_tools(callback_query: types.CallbackQuery):
     await callback_query.message.reply(response, reply_markup=keyboard, parse_mode="Markdown")
 
 @dp.callback_query_handler(lambda c: c.data.startswith("select_tool_"))
-async def select_tool(callback_query: types.CallbackQuery, state: FSMContext):
+async def select_tool(callback_query: types.CallbackQuery):
     tool_id = int(callback_query.data.split("_")[2])
+    
+    # Получаем состояние для текущего пользователя
+    state = dp.current_state(user=callback_query.from_user.id)
     
     # Сохраняем ID инструмента в состоянии
     await state.update_data(tool_id=tool_id)
     
     # Переходим в состояние ожидания ФИО
-    await ToolIssueState.waiting_for_fullname.set()
+    await state.set_state(ToolIssueState.waiting_for_fullname.state)
     
     await callback_query.message.answer(
         "👤 *Получение инструмента*\n\n"
         "Пожалуйста, введите ваше ФИО:",
         parse_mode="Markdown"
     )
+    
+    # Отвечаем на callback_query, чтобы убрать часики
     await callback_query.answer()
 
 @dp.message_handler(state=ToolIssueState.waiting_for_fullname)
-async def process_employee_fullname(message: types.Message, state: FSMContext):
+async def process_employee_fullname(message: types.Message):
+    # Получаем состояние для текущего пользователя
+    state = dp.current_state(user=message.from_user.id)
+    
     employee_fullname = message.text.strip()
     
     # Получаем данные из состояния
     data = await state.get_data()
     tool_id = data.get('tool_id')
+    
+    # Сбрасываем состояние
+    await state.finish()
     
     # Создаем запрос на выдачу инструмента
     if create_tool_request(tool_id, employee_fullname, message.chat.id):
@@ -332,9 +344,6 @@ async def process_employee_fullname(message: types.Message, state: FSMContext):
         )
     else:
         await message.answer("❌ Произошла ошибка при создании запроса. Попробуйте позже.")
-    
-    # Сбрасываем состояние
-    await state.finish()
 
 @dp.callback_query_handler(lambda c: c.data.startswith(("approve_", "reject_")))
 async def process_admin_issue_response(callback_query: types.CallbackQuery):
