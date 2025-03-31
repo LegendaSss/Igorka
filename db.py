@@ -121,9 +121,9 @@ def get_issued_tools():
     
     try:
         cursor.execute('''
-            SELECT t.name, i.employee_name, i.issue_date, i.return_date
-            FROM issued_tools i
-            JOIN tools t ON i.tool_id = t.id
+            SELECT t.id, t.name, i.employee_name, i.issue_date, i.expected_return_date
+            FROM tools t
+            JOIN issued_tools i ON t.id = i.tool_id
             WHERE i.return_date IS NULL
         ''')
         

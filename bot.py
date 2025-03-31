@@ -465,6 +465,7 @@ async def process_search(message: types.Message, state: FSMContext):
 
 @dp.callback_query_handler(lambda c: c.data == "return")
 async def show_return_menu(callback_query: types.CallbackQuery):
+    """Показать меню возврата инструментов"""
     try:
         logger.info("DEBUG: Получение списка выданных инструментов")
         issued_tools = get_issued_tools()
@@ -474,6 +475,7 @@ async def show_return_menu(callback_query: types.CallbackQuery):
             await callback_query.message.edit_text(
                 "❌ *Нет выданных инструментов*\n\n"
                 "У вас нет инструментов для возврата.",
+                parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup().add(
                     InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
                 )
@@ -481,30 +483,21 @@ async def show_return_menu(callback_query: types.CallbackQuery):
             return
 
         keyboard = InlineKeyboardMarkup(row_width=1)
-        text = "📋 *Выданные инструменты:*\n\n"
-
         for tool in issued_tools:
-            tool_id, tool_name, employee, issue_date, expected_return = tool
-            # Форматируем даты для отображения
+            tool_id, name, employee, issue_date, expected_return = tool
             issue_date = datetime.strptime(issue_date, '%Y-%m-%d').strftime('%d.%m.%Y')
             expected_return = datetime.strptime(expected_return, '%Y-%m-%d').strftime('%d.%m.%Y')
             
-            text += f"🛠️ *{tool_name}*\n"
-            text += f"👤 Выдан: {employee}\n"
-            text += f"📅 Дата выдачи: {issue_date}\n"
-            text += f"⚠️ Вернуть до: {expected_return}\n\n"
-            
-            keyboard.add(InlineKeyboardButton(
-                f"📥 Вернуть: {tool_name}",
-                callback_data=f"return_tool_{tool_id}"
-            ))
+            button_text = f"🔧 {name} - {employee} (до {expected_return})"
+            keyboard.add(InlineKeyboardButton(button_text, callback_data=f"return_tool_{tool_id}"))
 
         keyboard.add(InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu"))
 
         await callback_query.message.edit_text(
-            text,
-            reply_markup=keyboard,
-            parse_mode="Markdown"
+            "*📋 Выберите инструмент для возврата:*\n\n"
+            "Нажмите на инструмент, который хотите вернуть.",
+            parse_mode="Markdown",
+            reply_markup=keyboard
         )
 
     except Exception as e:
@@ -553,7 +546,7 @@ async def return_tool(callback_query: types.CallbackQuery):
             f"🛠️ Инструмент: *{tool_name}*\n"
             f"👤 Сотрудник: {employee}\n"
             f"📅 Дата выдачи: {issue_date}\n"
-            f"⚠️ Срок возврата: {expected_return}\n\n"
+            f"⚠️ Вернуть до: {expected_return}\n\n"
             "Пожалуйста, сфотографируйте инструмент для подтверждения возврата.\n"
             "Фото должно быть четким и показывать состояние инструмента.",
             parse_mode="Markdown",
