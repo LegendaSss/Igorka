@@ -6,14 +6,15 @@ import os
 # Create a logger
 logger = logging.getLogger(__name__)
 
+# Определяем путь к базе данных
+DB_PATH = os.path.join(os.getenv('DATA_DIR', ''), 'tools.db')
+if not DB_PATH:
+    DB_PATH = 'tools.db'
+
 class DatabaseConnection:
     def __init__(self):
-        # Определяем путь к базе данных
-        db_path = os.path.join(os.getenv('DATA_DIR', ''), 'tools.db')
-        if not db_path:
-            db_path = 'tools.db'
-        logger.info(f"DatabaseConnection: путь к базе данных: {db_path}")
-        self.conn = sqlite3.connect(db_path)
+        logger.info(f"DatabaseConnection: путь к базе данных: {DB_PATH}")
+        self.conn = sqlite3.connect(DB_PATH)
         self.cursor = self.conn.cursor()
 
     def __enter__(self):
@@ -28,13 +29,8 @@ class DatabaseConnection:
 
 def create_tables():
     """Создает необходимые таблицы в базе данных"""
-    # Определяем путь к базе данных
-    db_path = os.path.join(os.getenv('DATA_DIR', ''), 'tools.db')
-    if not db_path:
-        db_path = 'tools.db'
-    logger.info(f"create_tables: путь к базе данных: {db_path}")
-    
-    conn = sqlite3.connect(db_path)
+    logger.info(f"create_tables: путь к базе данных: {DB_PATH}")
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
     try:
@@ -58,6 +54,7 @@ def create_tables():
                 tool_id INTEGER,
                 employee_name TEXT NOT NULL,
                 issue_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+                expected_return_date DATE,
                 return_date DATETIME,
                 FOREIGN KEY (tool_id) REFERENCES tools(id)
             )
@@ -101,16 +98,11 @@ def create_tables():
 
 def get_tools():
     """Получает список всех инструментов"""
-    # Определяем путь к базе данных
-    db_path = os.path.join(os.getenv('DATA_DIR', ''), 'tools.db')
-    if not db_path:
-        db_path = 'tools.db'
-    
-    conn = sqlite3.connect(db_path)
+    logger.info("DEBUG: Получение списка инструментов")
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
     try:
-        logger.info("DEBUG: Получение списка инструментов")
         cursor.execute('SELECT id, name, status, quantity FROM tools')
         tools = cursor.fetchall()
         logger.info(f"DEBUG: Получено {len(tools)} инструментов: {tools}")
@@ -124,7 +116,7 @@ def get_tools():
 def get_issued_tools():
     """Получает список выданных инструментов"""
     logger.info("DEBUG: Получение списка выданных инструментов")
-    conn = sqlite3.connect(os.path.join(os.getenv('DATA_DIR', ''), 'tools.db'))
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
     try:
@@ -194,12 +186,7 @@ def return_tool(tool_id, employee_name):
         return False
 
 def get_tool_history():
-    # Определяем путь к базе данных
-    db_path = os.path.join(os.getenv('DATA_DIR', ''), 'tools.db')
-    if not db_path:
-        db_path = 'tools.db'
-    
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
     cursor.execute('''
@@ -215,16 +202,10 @@ def get_tool_history():
 
 def get_overdue_tools(days_threshold=7):
     """Получает список просроченных инструментов"""
-    # Определяем путь к базе данных
-    db_path = os.path.join(os.getenv('DATA_DIR', ''), 'tools.db')
-    if not db_path:
-        db_path = 'tools.db'
-    
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    
     try:
-        # Получаем просроченные инструменты
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
         cursor.execute('''
             SELECT 
                 t.id,
@@ -252,12 +233,7 @@ def get_overdue_tools(days_threshold=7):
         conn.close()
 
 def is_tool_issued(tool_id):
-    # Определяем путь к базе данных
-    db_path = os.path.join(os.getenv('DATA_DIR', ''), 'tools.db')
-    if not db_path:
-        db_path = 'tools.db'
-    
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
     cursor.execute('SELECT COUNT(*) FROM issued_tools WHERE tool_id = ?', (tool_id,))
@@ -267,40 +243,29 @@ def is_tool_issued(tool_id):
     return count > 0
 
 def issue_tool(tool_id, employee_name):
-    # Определяем путь к базе данных
-    db_path = os.path.join(os.getenv('DATA_DIR', ''), 'tools.db')
-    if not db_path:
-        db_path = 'tools.db'
-    
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    
     try:
-        # Проверяем, не выдан ли уже инструмент
-        if is_tool_issued(tool_id):
-            raise Exception("Инструмент уже выдан")
-        
-        # Добавляем запись о выдаче
-        cursor.execute('''
-            INSERT INTO issued_tools (tool_id, employee_name)
-            VALUES (?, ?)
-        ''', (tool_id, employee_name))
-        
-        # Обновляем статус в tools
-        cursor.execute('UPDATE tools SET status = "issued" WHERE id = ?', (tool_id,))
-        
-        # Добавляем запись в историю
-        cursor.execute('''
-            INSERT INTO tool_history (tool_id, action, employee_name)
-            VALUES (?, 'issue', ?)
-        ''', (tool_id, employee_name))
-        
-        conn.commit()
+        with DatabaseConnection() as cursor:
+            # Проверяем, не выдан ли уже инструмент
+            if is_tool_issued(tool_id):
+                raise Exception("Инструмент уже выдан")
+            
+            # Добавляем запись о выдаче
+            cursor.execute('''
+                INSERT INTO issued_tools (tool_id, employee_name)
+                VALUES (?, ?)
+            ''', (tool_id, employee_name))
+            
+            # Обновляем статус в tools
+            cursor.execute('UPDATE tools SET status = "issued" WHERE id = ?', (tool_id,))
+            
+            # Добавляем запись в историю
+            cursor.execute('''
+                INSERT INTO tool_history (tool_id, action, employee_name)
+                VALUES (?, 'issue', ?)
+            ''', (tool_id, employee_name))
+            
     except Exception as e:
-        conn.rollback()
         raise e
-    finally:
-        conn.close()
 
 def create_tool_request(tool_id: int, employee_name: str, chat_id: int) -> bool:
     """Создает запрос на выдачу инструмента"""
@@ -420,12 +385,7 @@ def reject_issue_request(tool_id: int, chat_id: int) -> bool:
 
 def create_tool(name, quantity=1, description=None):
     """Создает новый инструмент"""
-    # Определяем путь к базе данных
-    db_path = os.path.join(os.getenv('DATA_DIR', ''), 'tools.db')
-    if not db_path:
-        db_path = 'tools.db'
-    
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
     try:

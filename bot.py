@@ -647,6 +647,83 @@ async def process_admin_action(callback_query: types.CallbackQuery):
         
         await callback_query.message.reply(response, reply_markup=keyboard, parse_mode="Markdown")
 
+@dp.callback_query_handler(lambda c: c.data == "main_menu")
+async def show_main_menu(callback_query: types.CallbackQuery):
+    await callback_query.answer()
+    await show_welcome(callback_query.message)
+
+@dp.callback_query_handler(lambda c: c.data == "help")
+async def show_help_command(callback_query: types.CallbackQuery):
+    await callback_query.answer()
+    await show_help(callback_query.message)
+
+@dp.callback_query_handler(lambda c: c.data == "search_tools")
+async def search_tools_command(callback_query: types.CallbackQuery):
+    await callback_query.answer()
+    await callback_query.message.edit_text(
+        "🔍 Введите название или часть названия инструмента для поиска:",
+        reply_markup=get_cancel_keyboard()
+    )
+    await ToolSearch.waiting_for_query.set()
+
+@dp.callback_query_handler(lambda c: c.data == "admin_history")
+async def show_admin_history(callback_query: types.CallbackQuery):
+    if callback_query.from_user.id != ADMIN_ID:
+        await callback_query.answer("⛔ У вас нет доступа к этой функции.")
+        return
+
+    await callback_query.answer()
+    history = get_tool_history()
+    if not history:
+        await callback_query.message.edit_text(
+            "📜 История операций пуста", 
+            reply_markup=get_admin_keyboard()
+        )
+        return
+
+    text = "📜 *История операций*\n\n"
+    for entry in history:
+        tool_name, action, employee, date = entry
+        text += f"🔧 *{tool_name}*\n"
+        text += f"✨ Действие: _{action}_\n"
+        text += f"👤 Сотрудник: _{employee}_\n"
+        text += f"📅 Дата: {date}\n\n"
+
+    await callback_query.message.edit_text(
+        text, 
+        reply_markup=get_admin_keyboard(),
+        parse_mode="Markdown"
+    )
+
+@dp.callback_query_handler(lambda c: c.data == "admin_overdue")
+async def show_overdue_tools(callback_query: types.CallbackQuery):
+    if callback_query.from_user.id != ADMIN_ID:
+        await callback_query.answer("⛔ У вас нет доступа к этой функции.")
+        return
+
+    await callback_query.answer()
+    overdue_tools = get_overdue_tools()
+    
+    if not overdue_tools:
+        await callback_query.message.edit_text(
+            "✅ Нет просроченных инструментов", 
+            reply_markup=get_admin_keyboard()
+        )
+        return
+
+    text = "⚠️ *Просроченные инструменты*\n\n"
+    for tool in overdue_tools:
+        name, employee, issue_date, expected_return = tool
+        text += f"🔧 *{name}*\n"
+        text += f"👤 Сотрудник: _{employee}_\n"
+        text += f"📅 Выдан: {issue_date}\n"
+        text += f"⏰ Ожидался возврат: {expected_return}\n\n"
+
+    await callback_query.message.edit_text(
+        text, 
+        reply_markup=get_admin_keyboard(),
+        parse_mode="Markdown"
+    )
 
 # Добавляем веб-сервер
 WEBHOOK_HOST = 'https://igorka.onrender.com'
