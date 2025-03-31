@@ -8,6 +8,8 @@ from aiogram.dispatcher.filters.state import State, StatesGroup
 from db import create_tables, get_tools, get_issued_tools, return_tool, get_tool_history, get_overdue_tools, is_tool_issued, issue_tool, create_tool_request, get_issue_request_info, approve_issue_request, reject_issue_request
 from config import API_TOKEN
 from datetime import datetime
+import os
+from aiohttp import web
 
 # Настройка логирования
 logging.basicConfig(
@@ -604,6 +606,21 @@ async def process_admin_action(callback_query: types.CallbackQuery):
         await callback_query.message.reply(response, reply_markup=keyboard, parse_mode="Markdown")
 
 
-# Запуск бота
+# Добавляем веб-сервер
+async def on_startup(dp):
+    logging.info('Bot started')
+
+async def handle_webhook(request):
+    return web.Response(text='Bot is running')
+
 if __name__ == "__main__":
-    executor.start_polling(dp)
+    # Создаем приложение
+    app = web.Application()
+    app.router.add_get('/', handle_webhook)
+    
+    # Настраиваем веб-сервер
+    port = int(os.environ.get('PORT', 8080))
+    
+    # Запускаем бота и веб-сервер
+    executor.start_polling(dp, skip_updates=True, on_startup=on_startup)
+    web.run_app(app, host='0.0.0.0', port=port)
