@@ -26,6 +26,9 @@ bot = Bot(token=TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
 
+# Устанавливаем экземпляр бота как текущий
+Bot.set_current(bot)
+
 # Создание таблиц
 create_tables()
 
