@@ -687,9 +687,14 @@ async def process_return_photo(message: types.Message, state: FSMContext):
 @dp.callback_query_handler(lambda c: c.data.startswith('approve_return_'))
 async def approve_return(callback_query: types.CallbackQuery):
     try:
-        _, _, tool_id, user_id = callback_query.data.split('_')
-        tool_id = int(tool_id)
-        user_id = int(user_id)
+        # Parse callback data
+        data = callback_query.data.split('_')
+        if len(data) != 4:
+            await callback_query.answer("❌ Ошибка: неверный формат данных")
+            return
+            
+        tool_id = int(data[2])
+        user_id = int(data[3])
         
         # Получаем информацию о выданном инструменте
         issued_tool = get_issued_tool_by_id(tool_id)
@@ -701,7 +706,7 @@ async def approve_return(callback_query: types.CallbackQuery):
         update_tool_status(tool_id, 'available')
         
         # Добавляем запись в историю
-        add_tool_history(tool_id, 'returned', user_id)
+        add_tool_history(tool_id, 'returned', issued_tool[2])  # используем имя сотрудника из issued_tool
         
         # Уведомляем администратора
         await callback_query.message.edit_caption(
@@ -730,9 +735,14 @@ async def approve_return(callback_query: types.CallbackQuery):
 @dp.callback_query_handler(lambda c: c.data.startswith('reject_return_'))
 async def reject_return(callback_query: types.CallbackQuery):
     try:
-        _, _, tool_id, user_id = callback_query.data.split('_')
-        tool_id = int(tool_id)
-        user_id = int(user_id)
+        # Parse callback data
+        data = callback_query.data.split('_')
+        if len(data) != 4:
+            await callback_query.answer("❌ Ошибка: неверный формат данных")
+            return
+            
+        tool_id = int(data[2])
+        user_id = int(data[3])
         
         # Получаем информацию о выданном инструменте
         issued_tool = get_issued_tool_by_id(tool_id)
