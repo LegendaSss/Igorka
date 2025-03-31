@@ -114,12 +114,10 @@ def get_tools():
         conn.close()
 
 def get_issued_tools():
-    """Получает список выданных инструментов"""
-    logger.info("DEBUG: Получение списка выданных инструментов")
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    
+    """Получить список выданных инструментов"""
     try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
         cursor.execute('''
             SELECT t.id, t.name, i.employee_name, 
                    COALESCE(strftime('%Y-%m-%d', i.issue_date), date('now')) as issue_date,
@@ -129,13 +127,52 @@ def get_issued_tools():
             WHERE i.return_date IS NULL
         ''')
         issued_tools = cursor.fetchall()
-        logger.info(f"DEBUG: Получено {len(issued_tools)} выданных инструментов")
+        conn.close()
         return issued_tools
     except Exception as e:
         logger.error(f"Ошибка при получении списка выданных инструментов: {e}")
         return []
-    finally:
+
+def get_admin_issued_tools():
+    """Получить список выданных инструментов для админа"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT t.name, i.employee_name, 
+                   COALESCE(strftime('%d.%m.%Y', i.issue_date), 'Не указана') as issue_date,
+                   COALESCE(strftime('%d.%m.%Y', i.expected_return_date), 'Не указана') as expected_return_date
+            FROM tools t
+            JOIN issued_tools i ON t.id = i.tool_id
+            WHERE i.return_date IS NULL
+            ORDER BY i.expected_return_date ASC
+        ''')
+        issued_tools = cursor.fetchall()
         conn.close()
+        return issued_tools
+    except Exception as e:
+        logger.error(f"Ошибка при получении списка выданных инструментов для админа: {e}")
+        return []
+
+def get_issued_tool_by_id(tool_id: int):
+    """Получить информацию о выданном инструменте по ID"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT t.id, t.name, i.employee_name,
+                   COALESCE(strftime('%Y-%m-%d', i.issue_date), date('now')) as issue_date,
+                   COALESCE(strftime('%Y-%m-%d', i.expected_return_date), date('now', '+7 days')) as expected_return_date
+            FROM tools t
+            JOIN issued_tools i ON t.id = i.tool_id
+            WHERE t.id = ? AND i.return_date IS NULL
+        ''', (tool_id,))
+        issued_tool = cursor.fetchone()
+        conn.close()
+        return issued_tool
+    except Exception as e:
+        logger.error(f"Ошибка при получении информации о выданном инструменте: {e}")
+        return None
 
 def return_tool(tool_id, employee_name):
     """Возвращает инструмент"""
@@ -226,12 +263,11 @@ def get_overdue_tools(days_threshold=7):
         ''', (days_threshold,))
         
         overdue = cursor.fetchall()
+        conn.close()
         return overdue
     except Exception as e:
         logger.error(f"Ошибка при получении просроченных инструментов: {e}")
         return []
-    finally:
-        conn.close()
 
 def is_tool_issued(tool_id):
     conn = sqlite3.connect(DB_PATH)
@@ -404,21 +440,3 @@ def create_tool(name, quantity=1, description=None):
         return None
     finally:
         conn.close()
-
-def get_issued_tool_by_id(tool_id: int) -> tuple:
-    """Получить информацию о выданном инструменте по его ID"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT t.id, t.name, i.employee_name,
-                   COALESCE(strftime('%Y-%m-%d', i.issue_date), date('now')) as issue_date,
-                   COALESCE(strftime('%Y-%m-%d', i.expected_return_date), date('now', '+7 days')) as expected_return_date
-            FROM tools t
-            JOIN issued_tools i ON t.id = i.tool_id
-            WHERE t.id = ? AND i.return_date IS NULL
-        ''', (tool_id,))
-        return cursor.fetchone()
-    except Exception as e:
-        logger.error(f"Ошибка при получении информации о выданном инструменте: {e}")
-        return None

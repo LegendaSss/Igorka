@@ -5,7 +5,12 @@ from aiogram.contrib.middlewares.logging import LoggingMiddleware
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
-from db import create_tables, get_tools, get_issued_tools, return_tool, get_tool_history, get_overdue_tools, is_tool_issued, issue_tool, create_tool_request, get_issue_request_info, approve_issue_request, reject_issue_request
+from db import (
+    get_tools, get_issued_tools, create_issue_request, 
+    approve_issue_request, get_issue_request, get_tool_by_id,
+    get_issued_tool_by_id, update_tool_status, add_tool_history,
+    get_tool_history, get_overdue_tools, get_all_issue_requests
+)
 from config import API_TOKEN
 from datetime import datetime
 import os
@@ -475,7 +480,6 @@ async def show_return_menu(callback_query: types.CallbackQuery):
             await callback_query.message.edit_text(
                 "❌ *Нет выданных инструментов*\n\n"
                 "У вас нет инструментов для возврата.",
-                parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup().add(
                     InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
                 )
@@ -705,33 +709,46 @@ async def process_admin_action(callback_query: types.CallbackQuery):
         
         if action == "issued":
             try:
-                issued_tools = get_issued_tools()
+                issued_tools = get_admin_issued_tools()
+                
                 if not issued_tools:
                     await callback_query.message.edit_text(
-                        "📋 *Выданные инструменты*\n\n"
-                        "На данный момент нет выданных инструментов.", 
+                        "*📋 Выданные инструменты*\n\n"
+                        "Нет выданных инструментов.",
+                        parse_mode="Markdown",
                         reply_markup=get_admin_keyboard()
                     )
                     return
 
-                text = "📋 *Выданные инструменты*\n\n"
-                for tool in issued_tools:
-                    tool_id, name, employee, issue_date = tool
-                    text += f"🔧 *{name}*\n"
-                    text += f"👤 Сотрудник: _{employee}_\n"
-                    text += f"📅 Выдан: {issue_date}\n\n"
-                
+                message_text = "*📋 Выданные инструменты:*\n\n"
+                for tool_name, employee, issue_date, expected_return in issued_tools:
+                    message_text += (
+                        f"🛠️ *{tool_name}*\n"
+                        f"👤 Сотрудник: {employee}\n"
+                        f"📅 Выдан: {issue_date}\n"
+                        f"⚠️ Вернуть до: {expected_return}\n"
+                        f"{'‼️ ПРОСРОЧЕН' if datetime.strptime(expected_return, '%d.%m.%Y').date() < datetime.now().date() else ''}\n\n"
+                    )
+
+                keyboard = InlineKeyboardMarkup()
+                keyboard.add(InlineKeyboardButton("📊 Отчет", callback_data="admin_report"))
+                keyboard.add(InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu"))
+
                 await callback_query.message.edit_text(
-                    text, 
-                    reply_markup=get_admin_keyboard(), 
-                    parse_mode="Markdown"
+                    message_text,
+                    parse_mode="Markdown",
+                    reply_markup=keyboard
                 )
+
             except Exception as e:
                 logger.error(f"Ошибка при получении выданных инструментов: {e}")
                 await callback_query.message.edit_text(
                     "❌ Произошла ошибка при получении списка выданных инструментов.\n"
                     "Пожалуйста, попробуйте позже.",
-                    reply_markup=get_admin_keyboard()
+                    reply_markup=InlineKeyboardMarkup().add(
+                        InlineKeyboardButton("🔄 Обновить", callback_data="admin_issued"),
+                        InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
+                    )
                 )
                 
         elif action == "report":
@@ -741,11 +758,9 @@ async def process_admin_action(callback_query: types.CallbackQuery):
                 
                 total_tools = sum(tool[3] for tool in tools)  # Суммируем количество всех инструментов
                 issued_count = len(issued)
-                available = total_tools - issued_count
-                
+
                 response = "📊 *Отчет по инструментам*\n\n"
                 response += f"📦 Всего инструментов: {total_tools}\n"
-                response += f"✅ Доступно: {available}\n"
                 response += f"📤 Выдано: {issued_count}\n\n"
 
                 # Добавляем статистику по брендам
@@ -982,12 +997,10 @@ async def show_admin_report(callback_query: types.CallbackQuery):
     issued = get_issued_tools()
     
     total_tools = sum(tool[3] for tool in tools)  # Суммируем количество всех инструментов
-    available_tools = sum(1 for tool in tools if tool[2] == 'available')
     issued_count = len(issued)
 
     text = "📊 *Отчет по инструментам*\n\n"
     text += f"📦 Всего инструментов: {total_tools}\n"
-    text += f"✅ Доступно: {available_tools}\n"
     text += f"📤 Выдано: {issued_count}\n\n"
 
     # Добавляем статистику по брендам
@@ -1261,3 +1274,116 @@ if __name__ == '__main__':
     
     # Запускаем веб-сервер
     web.run_app(app, host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
+
+@dp.callback_query_handler(lambda c: c.data == "main_menu")
+async def main_menu_handler(callback_query: types.CallbackQuery):
+    """Обработчик возврата в главное меню"""
+    try:
+        keyboard = InlineKeyboardMarkup(row_width=2)
+        keyboard.add(
+            InlineKeyboardButton("🔧 Инструменты", callback_data="tools"),
+            InlineKeyboardButton("↩️ Вернуть", callback_data="return")
+        )
+        
+        # Добавляем кнопку админа только для админа
+        if str(callback_query.from_user.id) == ADMIN_ID:
+            keyboard.add(InlineKeyboardButton("👨‍💼 Админ панель", callback_data="admin"))
+
+        await callback_query.message.edit_text(
+            "🏠 *Главное меню*\n\n"
+            "Выберите действие:",
+            parse_mode="Markdown",
+            reply_markup=keyboard
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при показе главного меню: {e}")
+        await callback_query.message.edit_text(
+            "❌ Произошла ошибка.\n"
+            "Попробуйте позже или обратитесь к администратору.",
+            reply_markup=InlineKeyboardMarkup().add(
+                InlineKeyboardButton("🔄 Обновить", callback_data="main_menu")
+            )
+        )
+
+@dp.callback_query_handler(lambda c: c.data.startswith("return_tool_"))
+async def process_return_tool(callback_query: types.CallbackQuery):
+    """Обработка возврата инструмента"""
+    try:
+        tool_id = int(callback_query.data.replace("return_tool_", ""))
+        logger.info(f"DEBUG: Запрос на возврат инструмента {tool_id}")
+
+        # Получаем информацию о выданном инструменте
+        issued_tool = get_issued_tool_by_id(tool_id)
+        if not issued_tool:
+            await callback_query.message.edit_text(
+                "❌ Инструмент не найден или уже возвращен.",
+                reply_markup=InlineKeyboardMarkup().add(
+                    InlineKeyboardButton("🔙 Назад", callback_data="return"),
+                    InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
+                )
+            )
+            return
+
+        try:
+            tool_id, tool_name, employee, issue_date, expected_return = issued_tool
+            if issue_date:
+                issue_date = datetime.strptime(issue_date, '%Y-%m-%d').strftime('%d.%m.%Y')
+            else:
+                issue_date = "Дата не указана"
+                
+            if expected_return:
+                expected_return = datetime.strptime(expected_return, '%Y-%m-%d').strftime('%d.%m.%Y')
+            else:
+                expected_return = "Дата не указана"
+
+            # Сохраняем ID инструмента в state
+            await ToolReturnState.waiting_for_photo.set()
+            state = dp.current_state(user=callback_query.from_user.id)
+            async with state.proxy() as data:
+                data['tool_id'] = tool_id
+                data['tool_name'] = tool_name
+                data['employee'] = employee
+
+            await callback_query.message.edit_text(
+                f"📸 *Возврат инструмента*\n\n"
+                f"🛠️ Инструмент: *{tool_name}*\n"
+                f"👤 Сотрудник: {employee}\n"
+                f"📅 Дата выдачи: {issue_date}\n"
+                f"⚠️ Вернуть до: {expected_return}\n\n"
+                "Пожалуйста, сфотографируйте инструмент для подтверждения возврата.\n"
+                "Фото должно быть четким и показывать состояние инструмента.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup().add(
+                    InlineKeyboardButton("❌ Отмена", callback_data="cancel_return")
+                )
+            )
+        except Exception as e:
+            logger.error(f"Ошибка при обработке дат: {e}")
+            await callback_query.message.edit_text(
+                "❌ Произошла ошибка при обработке информации об инструменте.\n"
+                "Пожалуйста, попробуйте позже или обратитесь к администратору.",
+                reply_markup=InlineKeyboardMarkup().add(
+                    InlineKeyboardButton("🔙 Назад", callback_data="return"),
+                    InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
+                )
+            )
+
+    except ValueError as e:
+        logger.error(f"Некорректный ID инструмента: {e}")
+        await callback_query.message.edit_text(
+            "❌ Произошла ошибка при обработке запроса.\n"
+            "Пожалуйста, попробуйте еще раз.",
+            reply_markup=InlineKeyboardMarkup().add(
+                InlineKeyboardButton("🔙 Назад", callback_data="return"),
+                InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
+            )
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при возврате инструмента: {e}")
+        await callback_query.message.edit_text(
+            "❌ Произошла ошибка при обработке запроса.\n"
+            "Пожалуйста, попробуйте позже или обратитесь к администратору.",
+            reply_markup=InlineKeyboardMarkup().add(
+                InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
+            )
+        )
