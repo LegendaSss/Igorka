@@ -10,6 +10,7 @@ from config import API_TOKEN
 from datetime import datetime
 import os
 from aiohttp import web
+from populate_database import populate_database
 
 # Настройка логирования
 logging.basicConfig(
@@ -37,6 +38,15 @@ if tools:
     logger.info("Примеры инструментов:")
     for tool in tools[:5]:  # Показываем первые 5 инструментов
         logger.info(f"- {tool}")
+else:
+    logger.info("База данных пуста, заполняем начальными данными...")
+    populate_database()
+    tools = get_tools()
+    logger.info(f"После заполнения в базе {len(tools)} инструментов")
+    if tools:
+        logger.info("Примеры добавленных инструментов:")
+        for tool in tools[:5]:
+            logger.info(f"- {tool}")
 
 # Создание таблиц
 create_tables()
