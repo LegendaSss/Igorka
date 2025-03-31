@@ -17,6 +17,7 @@ from datetime import datetime
 import os
 from aiohttp import web
 from populate_database import populate_database
+import time
 
 # Настройка логирования
 logging.basicConfig(
@@ -80,6 +81,28 @@ class ReturnToolStates(StatesGroup):
 
 # Количество инструментов на странице
 TOOLS_PER_PAGE = 10
+
+# Словарь для отслеживания последних callback-запросов
+_last_callback_time = {}
+
+async def throttle_callback(callback_query: types.CallbackQuery) -> bool:
+    """
+    Проверяет, не слишком ли часто отправляются callback-запросы.
+    Возвращает True, если запрос нужно обработать, False если его нужно пропустить.
+    """
+    user_id = callback_query.from_user.id
+    current_time = time.time()
+    
+    # Проверяем время последнего запроса
+    if user_id in _last_callback_time:
+        last_time = _last_callback_time[user_id]
+        if current_time - last_time < 1:  # Минимальный интервал между запросами - 1 секунда
+            await callback_query.answer("Пожалуйста, не нажимайте кнопки так часто", show_alert=True)
+            return False
+            
+    # Обновляем время последнего запроса
+    _last_callback_time[user_id] = current_time
+    return True
 
 # Старт
 @dp.message_handler(commands=["start"])
@@ -1161,7 +1184,7 @@ async def process_return_photo(message: types.Message, state: FSMContext):
                 "⏳ Пожалуйста, ожидайте решения администратора.\n"
                 "Вы получите уведомление о результате проверки.\n\n"
                 "ℹ️ Если фото будет отклонено, вам нужно будет:\n"
-                "1. Проверить состояние инструмента\n"
+                "1. Проверьте состояние инструмента\n"
                 "2. Убедитесь, что инструмент чистый и без повреждений\n"
                 "3. Сделайте новое четкое фото\n"
                 "4. Повторите процесс возврата",
@@ -1296,7 +1319,7 @@ async def reject_return(callback_query: types.CallbackQuery):
             "Пожалуйста:\n"
             "1. Проверьте состояние и комплектность инструмента\n"
             "2. Убедитесь, что инструмент чистый и без повреждений\n"
-            "3. Сделайте новое четкое фото при хорошем освещении\n"
+            "3. Сделайте новое четкое фото\n"
             "4. Повторите попытку возврата",
             reply_markup=InlineKeyboardMarkup().add(
                 InlineKeyboardButton("🔄 Повторить возврат", callback_data="return_tool"),
@@ -1315,7 +1338,7 @@ async def reject_return(callback_query: types.CallbackQuery):
             reply_markup=None
         )
         await callback_query.answer("Произошла ошибка при отклонении возврата")
-{{ ... }}
+
 @dp.callback_query_handler(lambda c: c.data == 'admin_issued')
 async def show_admin_issued(callback_query: types.CallbackQuery):
     """Показывает админу список выданных инструментов"""
@@ -1503,23 +1526,56 @@ def get_main_keyboard(user_id):
 async def show_main_menu(callback_query: types.CallbackQuery):
     """Показывает главное меню"""
     try:
+        # Проверяем частоту запросов
+        if not await throttle_callback(callback_query):
+            return
+
+        # Проверяем, не устарел ли callback
+        if callback_query.message.date.timestamp() < time.time() - 300:  # 5 минут
+            await callback_query.answer("Это сообщение устарело. Пожалуйста, используйте актуальное меню.", show_alert=True)
+            return
+
+        # Получаем клавиатуру для пользователя
+        keyboard = get_main_keyboard(callback_query.from_user.id)
+        
+        # Пытаемся отредактировать существующее сообщение
+        try:
+            await callback_query.message.edit_text(
+                "🏠 *Главное меню*\n\n"
+                "Выберите действие:",
+                parse_mode="Markdown",
+                reply_markup=keyboard
+            )
+        except MessageNotModified:
+            # Если сообщение не изменилось, просто игнорируем ошибку
+            await callback_query.answer()
+            return
+        except Exception as edit_error:
+            logging.error(f"Ошибка при редактировании сообщения меню: {edit_error}")
+            # Пробуем отправить новое сообщение
+            await callback_query.message.answer(
+                "🏠 *Главное меню*\n\n"
+                "Выберите действие:",
+                parse_mode="Markdown",
+                reply_markup=keyboard
+            )
+        
+        # Подтверждаем обработку callback
         await callback_query.answer()
-        await callback_query.message.edit_text(
-            "🏠 Главное меню\n\n"
-            "Выберите действие:",
-            reply_markup=get_main_keyboard(callback_query.from_user.id)
-        )
+        
     except Exception as e:
         logging.error(f"Ошибка при показе главного меню: {e}")
-        await callback_query.message.edit_text(
-            "❌ Произошла ошибка при открытии главного меню.",
-            reply_markup=get_main_keyboard(callback_query.from_user.id)
-        )
+        await callback_query.answer("Произошла ошибка при открытии главного меню", show_alert=True)
 
 @dp.message_handler(commands=['start'])
 async def start_command(message: types.Message):
     """Обработчик команды /start"""
     try:
+        # Очищаем историю callback-запросов для пользователя при новом старте
+        user_id = message.from_user.id
+        if user_id in _last_callback_time:
+            del _last_callback_time[user_id]
+            
         await message.reply(
             "👋 Добро пожаловать в систему учета инструментов!\n\n"
             "🔧 Здесь вы можете:\n"
@@ -1527,6 +1583,7 @@ async def start_command(message: types.Message):
             "- Возвращать их\n"
             "- Просматривать свои активные инструменты\n\n"
             "Выберите действие:",
+            parse_mode="Markdown",
             reply_markup=get_main_keyboard(message.from_user.id)
         )
     except Exception as e:
