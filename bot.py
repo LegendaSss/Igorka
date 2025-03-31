@@ -9,7 +9,8 @@ from db import (
     get_tools, get_issued_tools, create_tool_request, 
     approve_issue_request, get_issue_request_info, get_tool_by_id,
     get_issued_tool_by_id, update_tool_status, add_tool_history,
-    get_tool_history, get_overdue_tools, get_all_issue_requests
+    get_tool_history, get_overdue_tools, get_all_issue_requests,
+    create_tables
 )
 from config import API_TOKEN
 from datetime import datetime
