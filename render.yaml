@@ -2,11 +2,19 @@ services:
   - type: web
     name: telegram-bot
     env: python
+    disk:
+      name: sqlite-data
+      mountPath: /data
     buildCommand: pip install -r requirements.txt
     startCommand: |
-      python populate_database.py
+      mkdir -p /data
+      cd /data
+      python ../populate_database.py
+      cd ..
       python bot.py
     envVars:
       - key: API_TOKEN
         sync: false
+      - key: DATA_DIR
+        value: /data
     port: 8080
