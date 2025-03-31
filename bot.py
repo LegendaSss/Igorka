@@ -512,6 +512,7 @@ async def show_return_menu(callback_query: types.CallbackQuery):
 
 @dp.callback_query_handler(lambda c: c.data.startswith("return_tool_"))
 async def return_tool(callback_query: types.CallbackQuery):
+    """Обработка возврата инструмента"""
     try:
         tool_id = int(callback_query.data.replace("return_tool_", ""))
         logger.info(f"DEBUG: Запрос на возврат инструмента {tool_id}")
@@ -528,10 +529,9 @@ async def return_tool(callback_query: types.CallbackQuery):
             )
             return
 
-        tool_name = issued_tool[1]
-        employee = issued_tool[2]
-        issue_date = datetime.strptime(issued_tool[3], '%Y-%m-%d').strftime('%d.%m.%Y')
-        expected_return = datetime.strptime(issued_tool[4], '%Y-%m-%d').strftime('%d.%m.%Y')
+        tool_id, tool_name, employee, issue_date, expected_return = issued_tool
+        issue_date = datetime.strptime(issue_date, '%Y-%m-%d').strftime('%d.%m.%Y')
+        expected_return = datetime.strptime(expected_return, '%Y-%m-%d').strftime('%d.%m.%Y')
 
         # Сохраняем ID инструмента в state
         await ToolReturnState.waiting_for_photo.set()
@@ -574,6 +574,19 @@ async def return_tool(callback_query: types.CallbackQuery):
                 InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
             )
         )
+
+@dp.callback_query_handler(lambda c: c.data == "cancel_return", state=ToolReturnState.waiting_for_photo)
+async def cancel_return(callback_query: types.CallbackQuery, state: FSMContext):
+    """Отмена возврата инструмента"""
+    await state.finish()
+    await callback_query.answer("Возврат инструмента отменен")
+    await callback_query.message.edit_text(
+        "❌ Возврат инструмента отменен.",
+        reply_markup=InlineKeyboardMarkup().add(
+            InlineKeyboardButton("🔙 Назад", callback_data="return"),
+            InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
+        )
+    )
 
 @dp.message_handler(content_types=['photo'], state=ToolReturnState.waiting_for_photo)
 async def process_return_photo(message: types.Message, state: FSMContext):
@@ -641,17 +654,6 @@ async def process_return_photo(message: types.Message, state: FSMContext):
         )
     finally:
         await state.finish()
-
-@dp.callback_query_handler(lambda c: c.data == "cancel_return", state=ToolReturnState.waiting_for_photo)
-async def cancel_return(callback_query: types.CallbackQuery, state: FSMContext):
-    await state.finish()
-    await callback_query.answer("Возврат инструмента отменен")
-    await callback_query.message.edit_text(
-        "❌ Возврат инструмента отменен.",
-        reply_markup=InlineKeyboardMarkup().add(
-            InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
-        )
-    )
 
 def get_admin_keyboard():
     keyboard = InlineKeyboardMarkup()

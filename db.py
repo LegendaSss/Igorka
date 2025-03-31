@@ -121,12 +121,13 @@ def get_issued_tools():
     
     try:
         cursor.execute('''
-            SELECT t.id, t.name, i.employee_name, i.issue_date, i.expected_return_date
+            SELECT t.id, t.name, i.employee_name, 
+                   strftime('%Y-%m-%d', i.issue_date) as issue_date, 
+                   strftime('%Y-%m-%d', i.expected_return_date) as expected_return_date
             FROM tools t
             JOIN issued_tools i ON t.id = i.tool_id
             WHERE i.return_date IS NULL
         ''')
-        
         issued_tools = cursor.fetchall()
         logger.info(f"DEBUG: Получено {len(issued_tools)} выданных инструментов")
         return issued_tools
