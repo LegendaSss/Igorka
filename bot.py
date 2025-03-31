@@ -484,36 +484,74 @@ async def return_tool_request(callback_query: types.CallbackQuery):
     for tool in issued_tools:
         issue_date = tool[3].split()[0] if tool[3] else "Дата неизвестна"
         button_text = f"📦 {tool[1]} (выдан: {issue_date})"
-        keyboard.add(InlineKeyboardButton(button_text, callback_data=f"return_{tool[0]}"))
+        keyboard.add(InlineKeyboardButton(button_text, callback_data=f"return_tool_{tool[0]}"))
     
     keyboard.add(InlineKeyboardButton("❌ Отмена", callback_data="tools"))
     
     await callback_query.message.reply(response, reply_markup=keyboard, parse_mode="Markdown")
 
-@dp.callback_query_handler(lambda c: c.data.startswith("return_"))
+@dp.callback_query_handler(lambda c: c.data.startswith("return_tool_"))
 async def process_return_tool(callback_query: types.CallbackQuery, state: FSMContext):
-    # Сразу отвечаем на callback
-    await callback_query.answer()
-    
     try:
-        tool_id = int(callback_query.data.split("_")[1])
+        # Получаем ID инструмента из callback_data
+        tool_id = int(callback_query.data.replace("return_tool_", ""))
         
-        # Получаем информацию о выданном инструменте
-        issued_tools = get_issued_tools()
-        tool_info = next((tool for tool in issued_tools if tool[0] == tool_id), None)
+        # Отвечаем на callback
+        await callback_query.answer()
         
-        if tool_info:
-            async with state.proxy() as data:
-                data['return_tool_id'] = tool_id
-                data['employee_name'] = tool_info[2]  # Сохраняем имя сотрудника
+        try:
+            # Получаем информацию о выданном инструменте
+            issued_tools = get_issued_tools()
+            tool_info = next((tool for tool in issued_tools if tool[0] == tool_id), None)
             
-            await ToolReturnState.waiting_for_photo.set()
-            await callback_query.message.reply("📸 Пожалуйста, отправьте фото инструмента.")
-        else:
-            await callback_query.answer("❌ Инструмент не найден")
-    except (ValueError, IndexError) as e:
-        logger.error(f"Ошибка при выборе инструмента: {e}")
-        await callback_query.answer("❌ Ошибка при выборе инструмента")
+            if tool_info:
+                async with state.proxy() as data:
+                    data['return_tool_id'] = tool_id
+                    data['employee_name'] = tool_info[2]  # Сохраняем имя сотрудника
+                
+                await ToolReturnState.waiting_for_photo.set()
+                await callback_query.message.edit_text(
+                    "📸 Пожалуйста, отправьте фото инструмента.\n"
+                    "Фото должно быть четким и показывать состояние инструмента.",
+                    reply_markup=InlineKeyboardMarkup().add(
+                        InlineKeyboardButton("❌ Отмена", callback_data="cancel_return")
+                    )
+                )
+            else:
+                await callback_query.message.edit_text(
+                    "❌ Инструмент не найден в списке выданных.\n"
+                    "Возможно, он уже был возвращен.",
+                    reply_markup=InlineKeyboardMarkup().add(
+                        InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
+                    )
+                )
+        except Exception as e:
+            logger.error(f"Ошибка при проверке инструмента: {e}")
+            await callback_query.message.edit_text(
+                "❌ Произошла ошибка при проверке инструмента.\n"
+                "Пожалуйста, попробуйте позже или обратитесь к администратору.",
+                reply_markup=InlineKeyboardMarkup().add(
+                    InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
+                )
+            )
+    except ValueError as e:
+        logger.error(f"Некорректный ID инструмента: {e}")
+        await callback_query.message.edit_text(
+            "❌ Некорректный ID инструмента.\n"
+            "Пожалуйста, попробуйте еще раз.",
+            reply_markup=InlineKeyboardMarkup().add(
+                InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
+            )
+        )
+    except Exception as e:
+        logger.error(f"Критическая ошибка при возврате инструмента: {e}")
+        await callback_query.message.edit_text(
+            "❌ Произошла критическая ошибка.\n"
+            "Пожалуйста, попробуйте позже или обратитесь к администратору.",
+            reply_markup=InlineKeyboardMarkup().add(
+                InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
+            )
+        )
 
 @dp.message_handler(content_types=['photo'], state=ToolReturnState.waiting_for_photo)
 async def process_return_photo(message: types.Message, state: FSMContext):
@@ -522,22 +560,75 @@ async def process_return_photo(message: types.Message, state: FSMContext):
             tool_id = data['return_tool_id']
             employee_name = data['employee_name']
         
-        if return_tool(tool_id, employee_name):
+        # Сохраняем фото
+        photo = message.photo[-1]  # Берем последнее (самое качественное) фото
+        file_id = photo.file_id
+        
+        try:
+            # Пытаемся вернуть инструмент
+            if return_tool(tool_id, employee_name):
+                await message.reply(
+                    "✅ Инструмент успешно возвращен!\n"
+                    "Спасибо за своевременный возврат.",
+                    reply_markup=InlineKeyboardMarkup().add(
+                        InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
+                    )
+                )
+                
+                # Отправляем уведомление администратору с фото
+                if ADMIN_ID:
+                    try:
+                        await bot.send_photo(
+                            ADMIN_ID,
+                            photo=file_id,
+                            caption=f"📸 Фото возвращенного инструмента\n"
+                                  f"👤 Сотрудник: {employee_name}"
+                        )
+                    except Exception as e:
+                        logger.error(f"Ошибка при отправке фото администратору: {e}")
+            else:
+                raise Exception("Ошибка при возврате в базе данных")
+                
+        except Exception as e:
+            logger.error(f"Ошибка при возврате инструмента в БД: {e}")
             await message.reply(
-                "✅ Инструмент успешно возвращен!\n"
-                "Спасибо за своевременный возврат."
+                "❌ Произошла ошибка при возврате инструмента.\n"
+                "Пожалуйста, попробуйте позже или обратитесь к администратору.",
+                reply_markup=InlineKeyboardMarkup().add(
+                    InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
+                )
             )
-        else:
-            raise Exception("Ошибка при возврате в базе данных")
-            
-    except Exception as e:
-        logger.error(f"Ошибка при возврате инструмента: {e}")
+    except KeyError as e:
+        logger.error(f"Отсутствуют необходимые данные в state: {e}")
         await message.reply(
-            "❌ Произошла ошибка при возврате инструмента.\n"
-            "Пожалуйста, попробуйте позже или обратитесь к администратору."
+            "❌ Ошибка: отсутствуют необходимые данные.\n"
+            "Пожалуйста, начните процесс возврата заново.",
+            reply_markup=InlineKeyboardMarkup().add(
+                InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
+            )
+        )
+    except Exception as e:
+        logger.error(f"Критическая ошибка при обработке фото: {e}")
+        await message.reply(
+            "❌ Произошла критическая ошибка при обработке фото.\n"
+            "Пожалуйста, попробуйте позже или обратитесь к администратору.",
+            reply_markup=InlineKeyboardMarkup().add(
+                InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
+            )
         )
     finally:
         await state.finish()
+
+@dp.callback_query_handler(lambda c: c.data == "cancel_return", state=ToolReturnState.waiting_for_photo)
+async def cancel_return(callback_query: types.CallbackQuery, state: FSMContext):
+    await state.finish()
+    await callback_query.answer("Возврат инструмента отменен")
+    await callback_query.message.edit_text(
+        "❌ Возврат инструмента отменен.",
+        reply_markup=InlineKeyboardMarkup().add(
+            InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
+        )
+    )
 
 def get_admin_keyboard():
     keyboard = InlineKeyboardMarkup()
@@ -548,104 +639,168 @@ def get_admin_keyboard():
 
 @dp.callback_query_handler(lambda c: c.data.startswith("admin_"))
 async def process_admin_action(callback_query: types.CallbackQuery):
-    # Сразу отвечаем на callback
-    await callback_query.answer()
-    
-    if callback_query.from_user.id != ADMIN_ID:
-        await callback_query.message.reply("⛔ У вас нет доступа к этой функции.")
-        return
-
-    action = callback_query.data.replace("admin_", "")
-    
-    if action == "issued":
-        issued_tools = get_issued_tools()
-        if not issued_tools:
-            await callback_query.message.edit_text("Нет выданных инструментов", reply_markup=get_admin_keyboard())
+    try:
+        # Сразу отвечаем на callback
+        await callback_query.answer()
+        
+        if callback_query.from_user.id != ADMIN_ID:
+            await callback_query.message.reply("⛔ У вас нет доступа к этой функции.")
             return
 
-        text = "📋 *Выданные инструменты*\n\n"
-        for tool in issued_tools:
-            tool_id, name, employee, issue_date = tool
-            text += f"🔧 *{name}*\n"
-            text += f"👤 Сотрудник: _{employee}_\n"
-            text += f"📅 Выдан: {issue_date}\n\n"
+        action = callback_query.data.replace("admin_", "")
         
-        await callback_query.message.edit_text(text, reply_markup=get_admin_keyboard(), parse_mode="Markdown")
-    elif action == "report":
-        tools = get_tools()
-        issued = get_issued_tools()
-        
-        total_tools = sum(tool[3] for tool in tools)  # Суммируем количество всех инструментов
-        issued_count = len(issued)
-        available = total_tools - issued_count
-        
-        response = "📊 *Общая статистика*\n\n"
-        response += f"┌ Всего инструментов: {total_tools}\n"
-        response += f"├ Выдано: {issued_count}\n"
-        response += f"└ Доступно: {available}\n"
-        
-        keyboard = InlineKeyboardMarkup()
-        keyboard.add(InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu"))
-        
-        await callback_query.message.reply(response, reply_markup=keyboard, parse_mode="Markdown")
-        
-    elif action == "history":
-        history = get_tool_history()
-        if not history:
-            await callback_query.message.reply(
-                "📜 *История операций*\n\n"
-                "История пуста.",
-                parse_mode="Markdown"
-            )
-            return
-            
-        response = "📜 *История операций*\n\n"
-        for entry in history:
-            name, action, date, employee, notes = entry
+        if action == "issued":
             try:
-                formatted_date = datetime.strptime(date, '%Y-%m-%d %H:%M:%S').strftime('%d.%m.%Y %H:%M')
-            except ValueError:
-                formatted_date = "Некорректная дата"
-            
-            # Convert action to Russian
-            action_text = "Выдан" if action == "issue" else "Возвращен" if action == "return" else action
-            
-            response += f"┌ *{name}*\n"
-            response += f"├ Действие: _{action_text}_\n"
-            if employee:
-                response += f"├ Сотрудник: {employee}\n"
-            response += f"└ Дата: {formatted_date}\n\n"
-            
-        keyboard = InlineKeyboardMarkup()
-        keyboard.add(InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu"))
-        
-        await callback_query.message.reply(response, reply_markup=keyboard, parse_mode="Markdown")
-        
-    elif action == "overdue":
-        overdue = get_overdue_tools()
-        if not overdue:
-            await callback_query.message.reply(
-                "⚠️ *Просроченные инструменты*\n\n"
-                "Нет просроченных инструментов.",
-                parse_mode="Markdown"
+                issued_tools = get_issued_tools()
+                if not issued_tools:
+                    await callback_query.message.edit_text(
+                        "📋 *Выданные инструменты*\n\n"
+                        "На данный момент нет выданных инструментов.", 
+                        reply_markup=get_admin_keyboard()
+                    )
+                    return
+
+                text = "📋 *Выданные инструменты*\n\n"
+                for tool in issued_tools:
+                    tool_id, name, employee, issue_date = tool
+                    text += f"🔧 *{name}*\n"
+                    text += f"👤 Сотрудник: _{employee}_\n"
+                    text += f"📅 Выдан: {issue_date}\n\n"
+                
+                await callback_query.message.edit_text(
+                    text, 
+                    reply_markup=get_admin_keyboard(), 
+                    parse_mode="Markdown"
+                )
+            except Exception as e:
+                logger.error(f"Ошибка при получении выданных инструментов: {e}")
+                await callback_query.message.edit_text(
+                    "❌ Произошла ошибка при получении списка выданных инструментов.\n"
+                    "Пожалуйста, попробуйте позже.",
+                    reply_markup=get_admin_keyboard()
+                )
+                
+        elif action == "report":
+            try:
+                tools = get_tools()
+                issued = get_issued_tools()
+                
+                total_tools = sum(tool[3] for tool in tools)  # Суммируем количество всех инструментов
+                issued_count = len(issued)
+                available = total_tools - issued_count
+                
+                response = "📊 *Отчет по инструментам*\n\n"
+                response += f"📦 Всего инструментов: {total_tools}\n"
+                response += f"✅ Доступно: {available}\n"
+                response += f"📤 Выдано: {issued_count}\n\n"
+
+                # Добавляем статистику по брендам
+                brands = {}
+                for tool in tools:
+                    brand = tool[1].split(' - ')[0] if ' - ' in tool[1] else 'Другое'
+                    brands[brand] = brands.get(brand, 0) + 1
+
+                response += "*Статистика по брендам:*\n"
+                for brand, count in sorted(brands.items(), key=lambda x: x[1], reverse=True):
+                    response += f"• {brand}: {count}\n"
+
+                await callback_query.message.edit_text(
+                    response,
+                    reply_markup=get_admin_keyboard(),
+                    parse_mode="Markdown"
+                )
+            except Exception as e:
+                logger.error(f"Ошибка при формировании отчета: {e}")
+                await callback_query.message.edit_text(
+                    "❌ Произошла ошибка при формировании отчета.\n"
+                    "Пожалуйста, попробуйте позже.",
+                    reply_markup=get_admin_keyboard()
+                )
+                
+        elif action == "history":
+            try:
+                history = get_tool_history()
+                if not history:
+                    await callback_query.message.edit_text(
+                        "📜 *История операций*\n\n"
+                        "История пуста.",
+                        parse_mode="Markdown",
+                        reply_markup=get_admin_keyboard()
+                    )
+                    return
+                    
+                text = "📜 *История операций*\n\n"
+                for entry in history[:10]:  # Показываем только последние 10 записей
+                    tool_name, action_type, employee, timestamp = entry
+                    text += f"🔧 *{tool_name}*\n"
+                    text += f"📝 Действие: _{action_type}_\n"
+                    if employee:
+                        text += f"👤 Сотрудник: _{employee}_\n"
+                    text += f"🕒 Время: {timestamp}\n\n"
+                
+                await callback_query.message.edit_text(
+                    text,
+                    parse_mode="Markdown",
+                    reply_markup=get_admin_keyboard()
+                )
+            except Exception as e:
+                logger.error(f"Ошибка при получении истории: {e}")
+                await callback_query.message.edit_text(
+                    "❌ Произошла ошибка при получении истории операций.\n"
+                    "Пожалуйста, попробуйте позже.",
+                    reply_markup=get_admin_keyboard()
+                )
+                
+        elif action == "overdue":
+            try:
+                overdue_tools = get_overdue_tools()
+                if not overdue_tools:
+                    await callback_query.message.edit_text(
+                        "⚠️ *Просроченные инструменты*\n\n"
+                        "Нет просроченных инструментов.",
+                        parse_mode="Markdown",
+                        reply_markup=get_admin_keyboard()
+                    )
+                    return
+
+                text = "⚠️ *Просроченные инструменты*\n\n"
+                for tool in overdue_tools:
+                    name, employee, issue_date, expected_return = tool
+                    text += f"🔧 *{name}*\n"
+                    text += f"👤 Сотрудник: _{employee}_\n"
+                    text += f"📅 Выдан: {issue_date}\n"
+                    text += f"⚠️ Ожидался возврат: {expected_return}\n\n"
+
+                await callback_query.message.edit_text(
+                    text,
+                    parse_mode="Markdown",
+                    reply_markup=get_admin_keyboard()
+                )
+            except Exception as e:
+                logger.error(f"Ошибка при получении просроченных инструментов: {e}")
+                await callback_query.message.edit_text(
+                    "❌ Произошла ошибка при получении списка просроченных инструментов.\n"
+                    "Пожалуйста, попробуйте позже.",
+                    reply_markup=get_admin_keyboard()
+                )
+        else:
+            logger.warning(f"Неизвестное админ-действие: {action}")
+            await callback_query.message.edit_text(
+                "❌ Неизвестное действие.\n"
+                "Пожалуйста, выберите действие из меню.",
+                reply_markup=get_admin_keyboard()
             )
-            return
             
-        response = "⚠️ *Просроченные инструменты*\n\n"
-        for tool in overdue:
-            tool_id, name, employee, issue_date, expected_return, quantity = tool
-            issue_date = datetime.strptime(issue_date, '%Y-%m-%d %H:%M:%S').strftime('%d.%m.%Y')
-            expected_return = datetime.strptime(expected_return, '%Y-%m-%d %H:%M:%S').strftime('%d.%m.%Y') if expected_return else "Не указана"
-            
-            response += f"┌ *{name}*\n"
-            response += f"├ Сотрудник: _{employee}_\n"
-            response += f"├ Выдан: {issue_date}\n"
-            response += f"└ Ожидался: {expected_return}\n\n"
-            
-        keyboard = InlineKeyboardMarkup()
-        keyboard.add(InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu"))
-        
-        await callback_query.message.reply(response, reply_markup=keyboard, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Критическая ошибка в обработчике админ-действий: {e}")
+        try:
+            await callback_query.message.edit_text(
+                "❌ Произошла критическая ошибка.\n"
+                "Пожалуйста, попробуйте позже или обратитесь к разработчику.",
+                reply_markup=get_admin_keyboard()
+            )
+        except Exception as e2:
+            logger.error(f"Не удалось отправить сообщение об ошибке: {e2}")
 
 @dp.callback_query_handler(lambda c: c.data == "main_menu")
 async def show_main_menu(callback_query: types.CallbackQuery):
@@ -721,6 +876,107 @@ async def show_overdue_tools(callback_query: types.CallbackQuery):
 
     await callback_query.message.edit_text(
         text, 
+        reply_markup=get_admin_keyboard(),
+        parse_mode="Markdown"
+    )
+
+@dp.callback_query_handler(lambda c: c.data == "tools")
+async def show_tools_command(callback_query: types.CallbackQuery):
+    await callback_query.answer()
+    await show_tools(callback_query.message)
+
+@dp.callback_query_handler(lambda c: c.data == "return")
+async def return_tool_command(callback_query: types.CallbackQuery):
+    await callback_query.answer()
+    issued_tools = get_issued_tools()
+    
+    if not issued_tools:
+        await callback_query.message.edit_text(
+            "❌ У вас нет выданных инструментов для возврата",
+            reply_markup=get_main_keyboard()
+        )
+        return
+
+    text = "🔧 *Выберите инструмент для возврата:*\n\n"
+    keyboard = InlineKeyboardMarkup(row_width=1)
+    
+    for tool in issued_tools:
+        tool_id, name, employee, issue_date = tool
+        if employee == callback_query.from_user.full_name:
+            text += f"• {name} (выдан {issue_date})\n"
+            keyboard.add(InlineKeyboardButton(
+                f"Вернуть: {name}", 
+                callback_data=f"return_{tool_id}"
+            ))
+    
+    keyboard.add(InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu"))
+    
+    await callback_query.message.edit_text(
+        text,
+        reply_markup=keyboard,
+        parse_mode="Markdown"
+    )
+
+@dp.callback_query_handler(lambda c: c.data == "admin_report")
+async def show_admin_report(callback_query: types.CallbackQuery):
+    if callback_query.from_user.id != ADMIN_ID:
+        await callback_query.answer("⛔ У вас нет доступа к этой функции.")
+        return
+
+    await callback_query.answer()
+    tools = get_tools()
+    issued = get_issued_tools()
+    
+    total_tools = sum(tool[3] for tool in tools)  # Суммируем количество всех инструментов
+    available_tools = sum(1 for tool in tools if tool[2] == 'available')
+    issued_count = len(issued)
+
+    text = "📊 *Отчет по инструментам*\n\n"
+    text += f"📦 Всего инструментов: {total_tools}\n"
+    text += f"✅ Доступно: {available_tools}\n"
+    text += f"📤 Выдано: {issued_count}\n\n"
+
+    # Добавляем статистику по брендам
+    brands = {}
+    for tool in tools:
+        brand = tool[1].split(' - ')[0] if ' - ' in tool[1] else 'Другое'
+        brands[brand] = brands.get(brand, 0) + 1
+
+    text += "*Статистика по брендам:*\n"
+    for brand, count in sorted(brands.items(), key=lambda x: x[1], reverse=True):
+        text += f"• {brand}: {count}\n"
+
+    await callback_query.message.edit_text(
+        text,
+        reply_markup=get_admin_keyboard(),
+        parse_mode="Markdown"
+    )
+
+@dp.callback_query_handler(lambda c: c.data == "admin_issued")
+async def show_admin_issued(callback_query: types.CallbackQuery):
+    if callback_query.from_user.id != ADMIN_ID:
+        await callback_query.answer("⛔ У вас нет доступа к этой функции.")
+        return
+
+    await callback_query.answer()
+    issued_tools = get_issued_tools()
+    
+    if not issued_tools:
+        await callback_query.message.edit_text(
+            "📋 Нет выданных инструментов", 
+            reply_markup=get_admin_keyboard()
+        )
+        return
+
+    text = "📋 *Выданные инструменты*\n\n"
+    for tool in issued_tools:
+        tool_id, name, employee, issue_date = tool
+        text += f"🔧 *{name}*\n"
+        text += f"👤 Сотрудник: _{employee}_\n"
+        text += f"📅 Выдан: {issue_date}\n\n"
+
+    await callback_query.message.edit_text(
+        text,
         reply_markup=get_admin_keyboard(),
         parse_mode="Markdown"
     )
