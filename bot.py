@@ -6,8 +6,8 @@ from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
 from db import (
-    get_tools, get_issued_tools, create_issue_request, 
-    approve_issue_request, get_issue_request, get_tool_by_id,
+    get_tools, get_issued_tools, create_tool_request, 
+    approve_issue_request, get_issue_request_info, get_tool_by_id,
     get_issued_tool_by_id, update_tool_status, add_tool_history,
     get_tool_history, get_overdue_tools, get_all_issue_requests
 )
@@ -1055,34 +1055,29 @@ async def show_main_menu(callback_query: types.CallbackQuery):
         
         # Обычные кнопки для всех пользователей
         keyboard.add(
-            InlineKeyboardButton("🛠️ Инструменты", callback_data="tools"),
-            InlineKeyboardButton("🔍 Поиск", callback_data="search_tools")
-        )
-        keyboard.add(
-            InlineKeyboardButton("📸 Вернуть", callback_data="return"),
-            InlineKeyboardButton("ℹ️ Помощь", callback_data="help")
+            InlineKeyboardButton("🔧 Инструменты", callback_data="tools"),
+            InlineKeyboardButton("↩️ Вернуть", callback_data="return")
         )
         
-        # Добавляем кнопки админ-панели, если это администратор
-        if callback_query.from_user.id == ADMIN_ID:
-            keyboard.add(
-                InlineKeyboardButton("📋 Выданные", callback_data="admin_issued"),
-                InlineKeyboardButton("📊 Отчёт", callback_data="admin_report")
-            )
-            keyboard.add(
-                InlineKeyboardButton("📜 История", callback_data="admin_history"),
-                InlineKeyboardButton("⚠️ Просрочки", callback_data="admin_overdue")
-            )
+        # Добавляем кнопку админа только для админа
+        if str(callback_query.from_user.id) == ADMIN_ID:
+            keyboard.add(InlineKeyboardButton("👨‍💼 Админ панель", callback_data="admin"))
 
         await callback_query.message.edit_text(
-            f"👋 *Здравствуйте, {callback_query.from_user.first_name}!*\n\n"
-            "Выберите нужное действие из меню ниже:",
-            reply_markup=keyboard,
-            parse_mode="Markdown"
+            "🏠 *Главное меню*\n\n"
+            "Выберите действие:",
+            parse_mode="Markdown",
+            reply_markup=keyboard
         )
     except Exception as e:
         logger.error(f"Ошибка при показе главного меню: {e}")
-        await callback_query.answer("❌ Произошла ошибка. Попробуйте /start")
+        await callback_query.message.edit_text(
+            "❌ Произошла ошибка.\n"
+            "Попробуйте позже или обратитесь к администратору.",
+            reply_markup=InlineKeyboardMarkup().add(
+                InlineKeyboardButton("🔄 Обновить", callback_data="main_menu")
+            )
+        )
 
 @dp.callback_query_handler(lambda c: c.data == "tools")
 async def show_tools_command(callback_query: types.CallbackQuery):

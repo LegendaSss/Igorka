@@ -440,3 +440,61 @@ def create_tool(name, quantity=1, description=None):
         return None
     finally:
         conn.close()
+
+def get_tool_by_id(tool_id: int):
+    """Получает информацию об инструменте по его ID"""
+    try:
+        with DatabaseConnection() as cursor:
+            cursor.execute('''
+                SELECT id, name, status, quantity, description
+                FROM tools
+                WHERE id = ?
+            ''', (tool_id,))
+            return cursor.fetchone()
+    except Exception as e:
+        logger.error(f"Ошибка при получении инструмента по ID: {e}")
+        return None
+
+def update_tool_status(tool_id: int, status: str):
+    """Обновляет статус инструмента"""
+    try:
+        with DatabaseConnection() as cursor:
+            cursor.execute('''
+                UPDATE tools
+                SET status = ?
+                WHERE id = ?
+            ''', (status, tool_id))
+            cursor.connection.commit()
+            return True
+    except Exception as e:
+        logger.error(f"Ошибка при обновлении статуса инструмента: {e}")
+        return False
+
+def add_tool_history(tool_id: int, action: str, employee_name: str):
+    """Добавляет запись в историю инструмента"""
+    try:
+        with DatabaseConnection() as cursor:
+            cursor.execute('''
+                INSERT INTO tool_history (tool_id, action, employee_name, timestamp)
+                VALUES (?, ?, ?, datetime('now'))
+            ''', (tool_id, action, employee_name))
+            cursor.connection.commit()
+            return True
+    except Exception as e:
+        logger.error(f"Ошибка при добавлении записи в историю: {e}")
+        return False
+
+def get_all_issue_requests():
+    """Получает все запросы на выдачу инструментов"""
+    try:
+        with DatabaseConnection() as cursor:
+            cursor.execute('''
+                SELECT r.id, t.name, r.employee_name, r.chat_id, r.request_date, r.status
+                FROM issue_requests r
+                JOIN tools t ON r.tool_id = t.id
+                ORDER BY r.request_date DESC
+            ''')
+            return cursor.fetchall()
+    except Exception as e:
+        logger.error(f"Ошибка при получении списка запросов: {e}")
+        return []
