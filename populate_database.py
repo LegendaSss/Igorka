@@ -1,10 +1,13 @@
 import sqlite3
+import os
 from db import create_tables
 
 def clear_database():
     """Очищает все таблицы в базе данных"""
     print("Очистка базы данных...")
-    conn = sqlite3.connect('tools.db')
+    data_dir = os.getenv('DATA_DIR', '.')
+    db_path = os.path.join(data_dir, 'tools.db')
+    conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     
     try:
@@ -67,7 +70,9 @@ def populate_database():
     ]
     
     # Добавляем инструменты
-    conn = sqlite3.connect('tools.db')
+    data_dir = os.getenv('DATA_DIR', '.')
+    db_path = os.path.join(data_dir, 'tools.db')
+    conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     
     try:
