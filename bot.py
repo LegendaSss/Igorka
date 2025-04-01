@@ -1088,6 +1088,8 @@ async def cancel_issue(callback_query: CallbackQuery, state: FSMContext):
 WEBHOOK_HOST = 'https://igorka.onrender.com'
 WEBHOOK_PATH = '/webhook'
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
+WEBAPP_HOST = "0.0.0.0"
+WEBAPP_PORT = int(os.environ.get('PORT', 8080))
 
 # Настройка веб-приложения
 app = web.Application()
@@ -1096,8 +1098,17 @@ async def on_startup(bot: Bot):
     # Создаем таблицы при запуске
     create_tables()
     
+    # Проверяем наличие инструментов
+    tools = get_tools()
+    if not tools:
+        logger.info("База данных пуста, заполняем начальными данными...")
+        populate_database()
+    
     # Устанавливаем вебхук
-    await bot.set_webhook(WEBHOOK_URL)
+    await bot.set_webhook(
+        url=WEBHOOK_URL,
+        secret_token=API_TOKEN[:50]  # Используем первые 50 символов токена как секрет
+    )
     logger.info(f"Webhook установлен на {WEBHOOK_URL}")
 
 async def on_shutdown(bot: Bot):
@@ -1113,7 +1124,7 @@ def main():
     webhook_handler = SimpleRequestHandler(
         dispatcher=dp,
         bot=bot,
-        secret_token=API_TOKEN[:50]
+        secret_token=API_TOKEN[:50]  # Тот же секрет, что и при установке вебхука
     )
     webhook_handler.register(app, path=WEBHOOK_PATH)
 
@@ -1125,7 +1136,7 @@ def main():
     dp.shutdown.register(on_shutdown)
 
     # Запускаем веб-сервер
-    web.run_app(app, host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
+    web.run_app(app, host=WEBAPP_HOST, port=WEBAPP_PORT)
 
 if __name__ == '__main__':
     main()
