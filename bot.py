@@ -1072,96 +1072,22 @@ async def handle_webhook(request):
 def setup_routes(app: web.Application):
     app.router.add_post(WEBHOOK_PATH, handle_webhook)
 
-@dp.callback_query_handler(lambda c: c.data.startswith('approve_return_'))
-async def approve_return(callback_query: types.CallbackQuery):
-    try:
-        logging.info(f"DEBUG: Получен callback для подтверждения возврата: {callback_query.data}")
-        # Parse callback data
-        data = callback_query.data.split('_')
-        if len(data) != 4:
-            logging.error(f"DEBUG: Неверный формат callback data: {callback_query.data}")
-            await callback_query.answer("❌ Ошибка: неверный формат данных")
-            return
-            
-        issue_id = int(data[2])
-        user_id = int(data[3])
-        
-        # Получаем информацию о возврате
-        return_info = get_return_info(issue_id)
-        if not return_info:
-            logging.error(f"DEBUG: Не найдена информация о возврате с ID {issue_id}")
-            await callback_query.answer("❌ Ошибка: информация о возврате не найдена")
-            return
-            
-        # Обновляем статус инструмента в БД
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        try:
-            # Получаем tool_id из issued_tools
-            cursor.execute('SELECT tool_id FROM issued_tools WHERE id = ?', (issue_id,))
-            tool_id = cursor.fetchone()[0]
-            
-            # Обновляем статус инструмента на "available"
-            cursor.execute('UPDATE tools SET status = "available" WHERE id = ?', (tool_id,))
-            
-            # Устанавливаем дату возврата
-            cursor.execute('UPDATE issued_tools SET return_date = CURRENT_TIMESTAMP WHERE id = ?', (issue_id,))
-            
-            # Добавляем запись в историю
-            cursor.execute(
-                'INSERT INTO tool_history (tool_id, action, employee_name, timestamp) VALUES (?, ?, ?, CURRENT_TIMESTAMP)',
-                (tool_id, 'returned', return_info[1], )
-            )
-            
-            conn.commit()
-            
-            # Уведомляем администратора
-            await callback_query.message.edit_caption(
-                callback_query.message.caption + "\n\n✅ Возврат подтвержден",
-                reply_markup=None
-            )
-            
-            # Уведомляем пользователя
-            await bot.send_message(
-                user_id,
-                f"✅ Возврат инструмента подтвержден администратором.\n"
-                f"Спасибо за использование системы!",
-                reply_markup=InlineKeyboardMarkup().add(
-                    InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
-                )
-            )
-            
-        except Exception as e:
-            conn.rollback()
-            logging.error(f"Ошибка при обновлении БД: {e}")
-            await callback_query.answer("❌ Ошибка при обновлении базы данных")
-            return
-        finally:
-            cursor.close()
-            conn.close()
-            
-    except Exception as e:
-        logging.error(f"Ошибка при подтверждении возврата: {e}")
-        await callback_query.answer("❌ Произошла ошибка при обработке подтверждения")
-        
-    await callback_query.answer()
-
 def register_handlers(dp: Dispatcher):
     dp.register_message_handler(start, commands=['start'])
     dp.register_callback_query_handler(show_help, lambda c: c.data == "help")
     dp.register_callback_query_handler(main_menu, lambda c: c.data == "main_menu")
-    dp.register_callback_query_handler(show_tools, lambda c: c.data == "show_tools")
+    dp.register_callback_query_handler(show_tools, lambda c: c.data == "tools")
     dp.register_callback_query_handler(select_tool, lambda c: c.data.startswith('select_tool_'))
     dp.register_message_handler(process_employee_fullname, state=ToolIssueState.waiting_for_fullname)
     dp.register_callback_query_handler(process_admin_issue_response, lambda c: c.data.startswith(('approve_issue_', 'reject_issue_')))
-    dp.register_callback_query_handler(search_tools_start, lambda c: c.data == "search_tools")
+    dp.register_callback_query_handler(search_tools_start, lambda c: c.data == "search")
     dp.register_message_handler(process_search, state=SearchState.waiting_for_query)
-    dp.register_callback_query_handler(show_return_menu, lambda c: c.data == "return_tool")
+    dp.register_callback_query_handler(show_return_menu, lambda c: c.data == "return")
     dp.register_callback_query_handler(return_tool, lambda c: c.data.startswith('return_tool_'))
-    dp.register_callback_query_handler(approve_return, lambda c: c.data.startswith('approve_return_'))
+    dp.register_callback_query_handler(cancel_return, lambda c: c.data == "cancel_return", state="*")
     dp.register_callback_query_handler(reject_return, lambda c: c.data.startswith('reject_return_'))
-    dp.register_callback_query_handler(cancel_return, lambda c: c.data == "cancel_return", state=ReturnToolStates.waiting_for_photo)
+    dp.register_callback_query_handler(approve_return, lambda c: c.data.startswith('approve_return_'))
+    dp.register_message_handler(process_return_photo, content_types=['photo'], state=ReturnToolStates.waiting_for_photo)
 
 if __name__ == '__main__':
     # Создаем таблицы при запуске
@@ -1205,64 +1131,3 @@ if __name__ == '__main__':
         host='0.0.0.0',
         port=int(os.getenv('PORT', 8080))
     )
-
-@dp.message_handler(content_types=['photo'], state=ReturnToolStates.waiting_for_photo)
-async def process_return_photo(message: types.Message, state: FSMContext):
-    try:
-        logging.info("DEBUG: Получено фото для возврата инструмента")
-        
-        # Получаем данные из состояния
-        async with state.proxy() as data:
-            issue_id = data['issue_id']
-            tool_name = data['tool_name']
-            employee = data['employee']
-            
-        # Получаем фото с наилучшим качеством
-        photo = message.photo[-1]
-        file_id = photo.file_id
-        
-        # Создаем клавиатуру для админа
-        admin_keyboard = InlineKeyboardMarkup(row_width=2)
-        admin_keyboard.add(
-            InlineKeyboardButton("✅ Принять", callback_data=f"approve_return_{issue_id}_{message.from_user.id}"),
-            InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_return_{issue_id}_{message.from_user.id}")
-        )
-        
-        # Отправляем фото и информацию админу
-        admin_message = (
-            f"📸 Получена фотография для возврата инструмента\n\n"
-            f"🔧 Инструмент: {tool_name}\n"
-            f"👤 Сотрудник: {employee}\n"
-            f"🆔 ID выдачи: {issue_id}"
-        )
-        
-        # Отправляем сообщение админу
-        await bot.send_photo(
-            chat_id=ADMIN_ID,
-            photo=file_id,
-            caption=admin_message,
-            reply_markup=admin_keyboard
-        )
-        
-        # Очищаем состояние
-        await state.finish()
-        
-        # Отправляем подтверждение пользователю
-        await message.reply(
-            "✅ Фото получено и отправлено на проверку администратору.\n"
-            "Пожалуйста, ожидайте подтверждения.",
-            reply_markup=InlineKeyboardMarkup().add(
-                InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
-            )
-        )
-        
-    except Exception as e:
-        logging.error(f"Ошибка при обработке фото возврата: {e}")
-        await message.reply(
-            "❌ Произошла ошибка при обработке фотографии.\n"
-            "Пожалуйста, попробуйте еще раз или обратитесь к администратору.",
-            reply_markup=InlineKeyboardMarkup().add(
-                InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
-            )
-        )
-        await state.finish()
