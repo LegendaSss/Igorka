@@ -835,6 +835,24 @@ def register_handlers(dp: Dispatcher):
     dp.register_message_handler(cmd_report, commands=['report'])
     dp.register_message_handler(cmd_overdue, commands=['overdue'])
 
+async def handle_webhook(request):
+    """Обработчик вебхука от Telegram"""
+    if request.match_info.get('token') != API_TOKEN:
+        return web.Response(status=403)
+    
+    try:
+        data = await request.json()
+        update = types.Update(**data)
+        await dp.process_update(update)
+        return web.Response(status=200)
+    except Exception as e:
+        logger.error(f"Ошибка при обработке вебхука: {e}")
+        return web.Response(status=500)
+
+async def health_check(request):
+    """Эндпоинт для проверки работоспособности"""
+    return web.Response(text="OK", status=200)
+
 # Инициализация и запуск
 async def on_startup(app):
     """Действия при запуске бота"""
