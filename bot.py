@@ -20,6 +20,21 @@ from aiohttp import web
 from populate_database import populate_database
 import time
 
+# Инициализация бота и диспетчера
+TOKEN = API_TOKEN
+ADMIN_ID = 1495719377  # ID администратора
+
+# Инициализация хранилища состояний
+storage = MemoryStorage()
+
+# Инициализация бота и диспетчера
+bot = Bot(token=TOKEN)
+dp = Dispatcher(bot, storage=storage)
+
+# Устанавливаем экземпляр бота как текущий
+Bot.set_current(bot)
+Dispatcher.set_current(dp)
+
 # Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
@@ -27,17 +42,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Инициализация бота и диспетчера
-TOKEN = API_TOKEN
-ADMIN_ID = 1495719377  # ID администратора
-
-storage = MemoryStorage()
-bot = Bot(token=TOKEN)
-dp = Dispatcher(bot, storage=storage)
-
-# Устанавливаем экземпляр бота как текущий
-Bot.set_current(bot)
-Dispatcher.set_current(dp)
+# Регистрируем логирование
+dp.middleware.setup(LoggingMiddleware())
 
 # Проверяем содержимое базы данных при запуске
 logger.info("Проверка базы данных при запуске...")
@@ -59,9 +65,6 @@ else:
 
 # Создание таблиц
 create_tables()
-
-# Регистрируем логирование
-dp.middleware.setup(LoggingMiddleware())
 
 # Состояния для возврата
 class ToolReturnState(StatesGroup):
@@ -1094,258 +1097,100 @@ async def cancel_issue(callback_query: types.CallbackQuery, state: FSMContext):
 
 # Добавляем веб-сервер
 WEBHOOK_HOST = 'https://igorka.onrender.com'
-WEBHOOK_PATH = '/webhook'
+WEBHOOK_PATH = '/webhook/'  # Added trailing slash
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 
-app = web.Application()
+# Настройки веб-сервера
+WEBAPP_HOST = '0.0.0.0'
+WEBAPP_PORT = int(os.getenv('PORT', 8080))
 
 async def on_startup(app):
-    """Установка вебхука при запуске"""
-    webhook_info = await bot.get_webhook_info()
-    if webhook_info.url != WEBHOOK_URL:
-        await bot.delete_webhook()
-        await bot.set_webhook(WEBHOOK_URL)
-    logger.info("Бот запущен и установлен вебхук на " + WEBHOOK_URL)
+    """Действия при запуске бота"""
+    try:
+        webhook_info = await bot.get_webhook_info()
+        if webhook_info.url != WEBHOOK_URL:
+            await bot.delete_webhook()
+            await bot.set_webhook(WEBHOOK_URL)
+        logger.info(f"Бот запущен и установлен вебхук на {WEBHOOK_URL}")
+    except Exception as e:
+        logger.error(f"Ошибка при установке вебхука: {e}")
+        raise
 
 async def on_shutdown(app):
-    """Отключение вебхука при выключении"""
-    await bot.delete_webhook()
-    await dp.storage.close()
-    await dp.storage.wait_closed()
-    logger.info("Бот остановлен")
+    """Действия при остановке бота"""
+    try:
+        await bot.delete_webhook()
+        await dp.storage.close()
+        await dp.storage.wait_closed()
+        logger.info("Бот остановлен")
+    except Exception as e:
+        logger.error(f"Ошибка при остановке бота: {e}")
 
 async def handle_webhook(request):
     """Обработчик вебхука"""
-    if request.match_info.get('token') != bot.token:
-        return web.Response(status=403)
-    
-    request_data = await request.json()
-    update = types.Update(**request_data)
-    await dp.process_update(update)
-    return web.Response(status=200)
+    try:
+        request_data = await request.json()
+        update = types.Update(**request_data)
+        Bot.set_current(bot)
+        Dispatcher.set_current(dp)
+        await dp.process_update(update)
+        return web.Response(status=200)
+    except Exception as e:
+        logger.error(f"Ошибка при обработке вебхука: {e}")
+        return web.Response(status=500)
 
 def setup_routes(app: web.Application):
     """Настройка маршрутов веб-приложения"""
-    app.router.add_post(f'{WEBHOOK_PATH}/', handle_webhook)
-
-def register_handlers(dp: Dispatcher):
-    # Basic handlers
-    dp.register_message_handler(start, commands=['start'])
-    dp.register_callback_query_handler(show_help, lambda c: c.data == "help")
-    dp.register_callback_query_handler(main_menu, lambda c: c.data == "main_menu")
-    
-    # Tool management handlers
-    dp.register_callback_query_handler(show_tools, lambda c: c.data == "tools")
-    dp.register_callback_query_handler(select_tool, lambda c: c.data.startswith('select_tool_'))
-    dp.register_message_handler(process_employee_fullname, state=ToolIssueState.waiting_for_fullname)
-    
-    # Admin handlers
-    dp.register_callback_query_handler(process_admin_issue_response, lambda c: c.data.startswith(('approve_', 'reject_')))
-    dp.register_callback_query_handler(show_admin_history, lambda c: c.data == "admin_history")
-    dp.register_callback_query_handler(show_admin_report, lambda c: c.data == "admin_report")
-    dp.register_callback_query_handler(show_admin_issued, lambda c: c.data == "admin_issued")
-    dp.register_callback_query_handler(show_overdue_tools, lambda c: c.data == "overdue_tools")
-    
-    # Search handlers
-    dp.register_callback_query_handler(search_tools_start, lambda c: c.data == "search")
-    dp.register_message_handler(process_search, state=SearchState.waiting_for_query)
-    
-    # Return handlers
-    dp.register_callback_query_handler(show_return_menu, lambda c: c.data == "return")
-    dp.register_callback_query_handler(return_tool, lambda c: c.data.startswith('return_tool_'))
-    dp.register_callback_query_handler(cancel_return, lambda c: c.data == "cancel_return", state="*")
-    dp.register_callback_query_handler(reject_return, lambda c: c.data.startswith('reject_return_'))
-    dp.register_callback_query_handler(approve_return, lambda c: c.data.startswith('approve_return_'))
-    dp.register_message_handler(process_return_photo, content_types=['photo'], state=ReturnToolStates.waiting_for_photo)
-
-@dp.callback_query_handler(lambda c: c.data.startswith('approve_return_'))
-async def approve_return(callback_query: types.CallbackQuery):
-    try:
-        logging.info(f"DEBUG: Получен callback для подтверждения возврата: {callback_query.data}")
-        # Parse callback data
-        data = callback_query.data.split('_')
-        if len(data) != 4:
-            logging.error(f"DEBUG: Неверный формат callback data: {callback_query.data}")
-            await callback_query.answer("❌ Ошибка: неверный формат данных")
-            return
-            
-        issue_id = int(data[2])
-        user_id = int(data[3])
-        
-        db = DatabaseConnection()
-        with db.connection:
-            cursor = db.connection.cursor()
-            
-            try:
-                # Получаем информацию о возврате
-                cursor.execute("""
-                    SELECT t.id, t.name, it.employee_name, it.issue_date
-                    FROM issued_tools it
-                    JOIN tools t ON it.tool_id = t.id
-                    WHERE it.id = ?
-                """, (issue_id,))
-                
-                return_info = cursor.fetchone()
-                if not return_info:
-                    logging.error(f"DEBUG: Не найдена информация о возврате с ID {issue_id}")
-                    await callback_query.answer("❌ Ошибка: информация о возврате не найдена")
-                    return
-                
-                tool_id, tool_name, employee_name, issue_date = return_info
-                
-                # Обновляем статус инструмента
-                cursor.execute("UPDATE tools SET status = 'available' WHERE id = ?", (tool_id,))
-                
-                # Обновляем дату возврата
-                return_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                cursor.execute("""
-                    UPDATE issued_tools 
-                    SET return_date = ? 
-                    WHERE id = ?
-                """, (return_date, issue_id))
-                
-                # Добавляем запись в историю
-                cursor.execute("""
-                    INSERT INTO tool_history (tool_id, action, employee_name, timestamp)
-                    VALUES (?, 'returned', ?, ?)
-                """, (tool_id, employee_name, return_date))
-                
-                db.connection.commit()
-                
-                # Отправляем уведомление пользователю
-                await bot.send_message(
-                    user_id,
-                    f"✅ Возврат инструмента подтвержден!\n"
-                    f"🔧 Инструмент: {tool_name}\n"
-                    f"📅 Дата возврата: {return_date}",
-                    reply_markup=InlineKeyboardMarkup().add(
-                        InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
-                    )
-                )
-                
-                # Обновляем сообщение админа
-                await callback_query.message.edit_text(
-                    f"✅ Возврат инструмента подтвержден\n"
-                    f"🔧 Инструмент: {tool_name}\n"
-                    f"👤 Сотрудник: {employee_name}\n"
-                    f"📅 Дата выдачи: {issue_date}\n"
-                    f"📅 Дата возврата: {return_date}",
-                    reply_markup=None
-                )
-                
-            except Exception as e:
-                db.connection.rollback()
-                logging.error(f"Ошибка при подтверждении возврата: {e}")
-                await callback_query.answer("❌ Ошибка при обновлении базы данных")
-                return
-                
-    except Exception as e:
-        logging.error(f"Ошибка при обработке подтверждения возврата: {e}")
-        await callback_query.answer("❌ Произошла ошибка при обработке запроса")
-        
-    await callback_query.answer()
-
-@dp.message_handler(content_types=['photo'], state=ReturnToolStates.waiting_for_photo)
-async def process_return_photo(message: types.Message, state: FSMContext):
-    try:
-        logging.info("DEBUG: Получено фото для возврата инструмента")
-        
-        # Получаем данные из состояния
-        async with state.proxy() as data:
-            issue_id = data['issue_id']
-            tool_name = data['tool_name']
-            employee = data['employee']
-            
-        # Получаем фото с наилучшим качеством
-        photo = message.photo[-1]
-        file_id = photo.file_id
-        
-        # Создаем клавиатуру для админа
-        admin_keyboard = InlineKeyboardMarkup(row_width=2)
-        admin_keyboard.add(
-            InlineKeyboardButton("✅ Принять", callback_data=f"approve_return_{issue_id}_{message.from_user.id}"),
-            InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_return_{issue_id}_{message.from_user.id}")
-        )
-        
-        # Отправляем фото и информацию админу
-        admin_message = (
-            f"📸 Получена фотография для возврата инструмента\n\n"
-            f"🔧 Инструмент: {tool_name}\n"
-            f"👤 Сотрудник: {employee}\n"
-            f"🆔 ID выдачи: {issue_id}"
-        )
-        
-        # Отправляем сообщение админу
-        await bot.send_photo(
-            chat_id=ADMIN_ID,
-            photo=file_id,
-            caption=admin_message,
-            reply_markup=admin_keyboard
-        )
-        
-        # Очищаем состояние
-        await state.finish()
-        
-        # Отправляем подтверждение пользователю
-        await message.reply(
-            "✅ Фото получено и отправлено на проверку администратору.\n"
-            "Пожалуйста, ожидайте подтверждения.",
-            reply_markup=InlineKeyboardMarkup().add(
-                InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
-            )
-        )
-        
-    except Exception as e:
-        logging.error(f"Ошибка при обработке фото возврата: {e}")
-        await message.reply(
-            "❌ Произошла ошибка при обработке фотографии.\n"
-            "Пожалуйста, попробуйте еще раз или обратитесь к администратору.",
-            reply_markup=InlineKeyboardMarkup().add(
-                InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
-            )
-        )
-        await state.finish()
+    app.router.add_post(WEBHOOK_PATH, handle_webhook)
+    app.router.add_get("/", lambda r: web.Response(text="Bot is running"))
 
 if __name__ == '__main__':
-    # Создаем таблицы при запуске
+    # Настройка логирования
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    logger = logging.getLogger(__name__)
+
     try:
+        # Инициализация базы данных
         create_tables()
-        
-        # Проверяем базу данных при запуске
-        logging.info('Проверка базы данных при запуске...')
+        logger.info('Проверка базы данных при запуске...')
         tools = get_tools()
-        logging.info(f'Количество инструментов в базе: {len(tools)}')
+        logger.info(f'Количество инструментов в базе: {len(tools)}')
         
         if len(tools) == 0:
-            logging.info('База данных пуста, заполняем начальными данными...')
+            logger.info('База данных пуста, заполняем начальными данными...')
             populate_database()
             tools = get_tools()
-            logging.info(f'После заполнения в базе {len(tools)} инструментов')
-    except Exception as e:
-        logging.error(f"Ошибка при инициализации базы данных: {e}")
-        raise
+            logger.info(f'После заполнения в базе {len(tools)} инструментов')
 
-    # Создаем экземпляр бота
-    bot = Bot(token=API_TOKEN)
-    storage = MemoryStorage()
-    dp = Dispatcher(bot, storage=storage)
-    dp.middleware.setup(LoggingMiddleware())
-    
-    # Регистрируем все обработчики
-    register_handlers(dp)
-    
-    # Настраиваем веб-сервер
-    app = web.Application()
-    setup_routes(app)
-    
-    # Запускаем бота
-    logging.info('Bot started')
-    
-    # Запускаем веб-сервер
-    app.on_startup.append(on_startup)
-    app.on_shutdown.append(on_shutdown)
-    web.run_app(
-        app,
-        host='0.0.0.0',
-        port=int(os.getenv('PORT', 8080))
-    )
+        # Инициализация бота
+        bot = Bot(token=API_TOKEN)
+        storage = MemoryStorage()
+        dp = Dispatcher(bot, storage=storage)
+        
+        # Настройка middleware
+        dp.middleware.setup(LoggingMiddleware())
+        
+        # Регистрация обработчиков
+        register_handlers(dp)
+        
+        # Настройка веб-приложения
+        app = web.Application()
+        setup_routes(app)
+        
+        # Регистрация хуков
+        app.on_startup.append(on_startup)
+        app.on_shutdown.append(on_shutdown)
+        
+        # Запуск веб-сервера
+        logger.info(f'Запуск бота на {WEBAPP_HOST}:{WEBAPP_PORT}')
+        web.run_app(
+            app,
+            host=WEBAPP_HOST,
+            port=WEBAPP_PORT
+        )
+    except Exception as e:
+        logger.error(f"Критическая ошибка при запуске бота: {e}")
+        raise
