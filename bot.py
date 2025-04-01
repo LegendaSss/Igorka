@@ -1103,35 +1103,54 @@ async def on_startup(app):
     """Установка вебхука при запуске"""
     webhook_info = await bot.get_webhook_info()
     if webhook_info.url != WEBHOOK_URL:
+        await bot.delete_webhook()
         await bot.set_webhook(WEBHOOK_URL)
-    logger.info("Bot started")
+    logger.info("Бот запущен и установлен вебхук на " + WEBHOOK_URL)
 
 async def on_shutdown(app):
     """Отключение вебхука при выключении"""
     await bot.delete_webhook()
-    await bot.close()
-    logger.info("Bot stopped")
+    await dp.storage.close()
+    await dp.storage.wait_closed()
+    logger.info("Бот остановлен")
 
 async def handle_webhook(request):
     """Обработчик вебхука"""
-    # Проверяем подпись запроса от Telegram
-    update = types.Update(**await request.json())
+    if request.match_info.get('token') != bot.token:
+        return web.Response(status=403)
+    
+    request_data = await request.json()
+    update = types.Update(**request_data)
     await dp.process_update(update)
     return web.Response(status=200)
 
 def setup_routes(app: web.Application):
-    app.router.add_post(WEBHOOK_PATH, handle_webhook)
+    """Настройка маршрутов веб-приложения"""
+    app.router.add_post(f'{WEBHOOK_PATH}/', handle_webhook)
 
 def register_handlers(dp: Dispatcher):
+    # Basic handlers
     dp.register_message_handler(start, commands=['start'])
     dp.register_callback_query_handler(show_help, lambda c: c.data == "help")
     dp.register_callback_query_handler(main_menu, lambda c: c.data == "main_menu")
+    
+    # Tool management handlers
     dp.register_callback_query_handler(show_tools, lambda c: c.data == "tools")
     dp.register_callback_query_handler(select_tool, lambda c: c.data.startswith('select_tool_'))
     dp.register_message_handler(process_employee_fullname, state=ToolIssueState.waiting_for_fullname)
+    
+    # Admin handlers
     dp.register_callback_query_handler(process_admin_issue_response, lambda c: c.data.startswith(('approve_', 'reject_')))
+    dp.register_callback_query_handler(show_admin_history, lambda c: c.data == "admin_history")
+    dp.register_callback_query_handler(show_admin_report, lambda c: c.data == "admin_report")
+    dp.register_callback_query_handler(show_admin_issued, lambda c: c.data == "admin_issued")
+    dp.register_callback_query_handler(show_overdue_tools, lambda c: c.data == "overdue_tools")
+    
+    # Search handlers
     dp.register_callback_query_handler(search_tools_start, lambda c: c.data == "search")
     dp.register_message_handler(process_search, state=SearchState.waiting_for_query)
+    
+    # Return handlers
     dp.register_callback_query_handler(show_return_menu, lambda c: c.data == "return")
     dp.register_callback_query_handler(return_tool, lambda c: c.data.startswith('return_tool_'))
     dp.register_callback_query_handler(cancel_return, lambda c: c.data == "cancel_return", state="*")
@@ -1289,21 +1308,22 @@ async def process_return_photo(message: types.Message, state: FSMContext):
 
 if __name__ == '__main__':
     # Создаем таблицы при запуске
-    create_tables()
-    
-    # Проверяем базу данных при запуске
-    logging.info('Проверка базы данных при запуске...')
-    tools = get_tools()
-    logging.info(f'Количество инструментов в базе: {len(tools)}')
-    
-    if len(tools) == 0:
-        logging.info('База данных пуста, заполняем начальными данными...')
-        populate_database()
+    try:
+        create_tables()
+        
+        # Проверяем базу данных при запуске
+        logging.info('Проверка базы данных при запуске...')
         tools = get_tools()
-        logging.info(f'После заполнения в базе {len(tools)} инструментов')
-        logging.info('Примеры добавленных инструментов:')
-        for tool in tools[:5]:
-            logging.info(f'- {tool}')
+        logging.info(f'Количество инструментов в базе: {len(tools)}')
+        
+        if len(tools) == 0:
+            logging.info('База данных пуста, заполняем начальными данными...')
+            populate_database()
+            tools = get_tools()
+            logging.info(f'После заполнения в базе {len(tools)} инструментов')
+    except Exception as e:
+        logging.error(f"Ошибка при инициализации базы данных: {e}")
+        raise
 
     # Создаем экземпляр бота
     bot = Bot(token=API_TOKEN)
