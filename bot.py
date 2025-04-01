@@ -394,71 +394,120 @@ async def process_employee_fullname(message: types.Message):
     else:
         await message.answer("❌ Произошла ошибка при создании запроса. Попробуйте позже.")
 
-@dp.callback_query_handler(lambda c: c.data.startswith(("approve_", "reject_")))
+@dp.callback_query_handler(lambda c: c.data.startswith(('approve_', 'reject_')))
 async def process_admin_issue_response(callback_query: types.CallbackQuery):
-    logger.info(f"DEBUG: Получен callback: {callback_query.data}")
-    
     try:
-        parts = callback_query.data.split("_")
-        if len(parts) != 3:
-            logger.error(f"DEBUG: Неверный формат callback data: {callback_query.data}")
-            await callback_query.answer("❌ Ошибка обработки запроса")
+        logging.info(f"DEBUG: Получен callback для одобрения выдачи: {callback_query.data}")
+        # Parse callback data
+        data = callback_query.data.split('_')
+        if len(data) != 3:
+            logging.error(f"DEBUG: Неверный формат callback data: {callback_query.data}")
+            await callback_query.answer("❌ Ошибка: неверный формат данных")
             return
             
-        action = parts[0]  # approve или reject
-        tool_id = int(parts[1])
-        chat_id = int(parts[2])
+        action = data[0]  # approve или reject
+        tool_id = int(data[1])
+        user_id = int(data[2])
         
-        logger.info(f"DEBUG: Обработка {action} для tool_id={tool_id}, chat_id={chat_id}")
+        # Получаем информацию о запросе
+        conn = get_db_connection()
+        cursor = conn.cursor()
         
-        # Проверяем, что запрос обрабатывает админ
-        if callback_query.from_user.id != ADMIN_ID:
-            logger.warning(f"DEBUG: Попытка неавторизованного доступа от user_id={callback_query.from_user.id}")
-            await callback_query.answer("⛔ У вас нет прав для этого действия")
-            return
+        try:
+            # Проверяем существование запроса
+            cursor.execute('''
+                SELECT id, employee_name 
+                FROM issue_requests 
+                WHERE tool_id = ? AND chat_id = ? AND status = "pending"
+            ''', (tool_id, user_id))
+            request = cursor.fetchone()
             
-        # Получаем информацию о запросе до выполнения действия
-        request_info = get_issue_request_info(tool_id, chat_id)
-        logger.info(f"DEBUG: Информация о запросе: {request_info}")
-        
-        if action == "approve":
-            if request_info and approve_issue_request(tool_id, chat_id):
-                logger.info(f"DEBUG: Запрос успешно одобрен")
-                # Уведомляем сотрудника
+            if not request:
+                logging.error(f"DEBUG: Запрос на выдачу не найден для tool_id={tool_id}, user_id={user_id}")
+                await callback_query.answer("❌ Ошибка: запрос не найден или уже обработан")
+                return
+                
+            request_id, employee_name = request
+            
+            if action == "approve":
+                # Обновляем статус инструмента
+                cursor.execute('UPDATE tools SET status = "issued" WHERE id = ?', (tool_id,))
+                
+                # Создаем запись о выдаче
+                cursor.execute('''
+                    INSERT INTO issued_tools (tool_id, employee_name, issue_date, expected_return_date)
+                    VALUES (?, ?, CURRENT_TIMESTAMP, date('now', '+7 days'))
+                ''', (tool_id, employee_name))
+                
+                # Получаем id созданной записи
+                issue_id = cursor.lastrowid
+                
+                # Обновляем статус запроса
+                cursor.execute('UPDATE issue_requests SET status = "approved" WHERE id = ?', (request_id,))
+                
+                # Добавляем запись в историю
+                cursor.execute('''
+                    INSERT INTO tool_history (tool_id, action, employee_name, timestamp)
+                    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ''', (tool_id, 'issued', employee_name))
+                
+                conn.commit()
+                
+                # Получаем название инструмента
+                cursor.execute('SELECT name FROM tools WHERE id = ?', (tool_id,))
+                tool_name = cursor.fetchone()[0]
+                
+                # Уведомляем пользователя
                 await bot.send_message(
-                    chat_id,
-                    "✅ Ваш запрос на получение инструмента одобрен!\n"
-                    "Вы можете получить инструмент."
+                    user_id,
+                    f"✅ Запрос на получение инструмента одобрен!\n\n"
+                    f"🔧 Инструмент: {tool_name}\n"
+                    f"📝 Номер выдачи: {issue_id}\n"
+                    f"⏳ Ожидаемая дата возврата: через 7 дней\n\n"
+                    f"❗️ Пожалуйста, верните инструмент вовремя",
+                    reply_markup=InlineKeyboardMarkup().add(
+                        InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
+                    )
                 )
+                
+                # Обновляем сообщение админа
                 await callback_query.message.edit_text(
                     f"{callback_query.message.text}\n\n"
-                    "✅ Запрос одобрен",
-                    parse_mode="Markdown"
+                    f"✅ Одобрено",
+                    reply_markup=None
                 )
-                await callback_query.answer("✅ Запрос одобрен")
-            else:
-                logger.error(f"DEBUG: Ошибка при одобрении запроса")
-                await callback_query.answer("❌ Ошибка при одобрении запроса")
-        elif action == "reject":
-            if reject_issue_request(tool_id, chat_id):
-                logger.info(f"DEBUG: Запрос успешно отклонен")
-                # Уведомляем сотрудника
+            elif action == "reject":
+                # Обновляем статус запроса
+                cursor.execute('UPDATE issue_requests SET status = "rejected" WHERE id = ?', (request_id,))
+                
+                conn.commit()
+                
+                # Уведомляем пользователя
                 await bot.send_message(
-                    chat_id,
+                    user_id,
                     "❌ Ваш запрос на получение инструмента отклонен."
                 )
+                
+                # Обновляем сообщение админа
                 await callback_query.message.edit_text(
                     f"{callback_query.message.text}\n\n"
-                    "❌ Запрос отклонен",
-                    parse_mode="Markdown"
+                    "❌ Отклонено",
+                    reply_markup=None
                 )
-                await callback_query.answer("❌ Запрос отклонен")
-            else:
-                logger.error(f"DEBUG: Ошибка при отклонении запроса")
-                await callback_query.answer("❌ Ошибка при отклонении запроса")
+        except Exception as e:
+            conn.rollback()
+            logging.error(f"Ошибка при обновлении БД: {e}")
+            await callback_query.answer("❌ Ошибка при обновлении базы данных")
+            return
+        finally:
+            cursor.close()
+            conn.close()
+            
     except Exception as e:
-        logger.error(f"DEBUG: Необработанная ошибка: {str(e)}")
-        await callback_query.answer("❌ Произошла ошибка")
+        logging.error(f"Ошибка при обработке одобрения: {e}")
+        await callback_query.answer("❌ Произошла ошибка при обработке запроса")
+        
+    await callback_query.answer()
 
 @dp.callback_query_handler(lambda c: c.data == "search_tools")
 async def search_tools_start(callback_query: types.CallbackQuery):
@@ -1079,7 +1128,7 @@ def register_handlers(dp: Dispatcher):
     dp.register_callback_query_handler(show_tools, lambda c: c.data == "tools")
     dp.register_callback_query_handler(select_tool, lambda c: c.data.startswith('select_tool_'))
     dp.register_message_handler(process_employee_fullname, state=ToolIssueState.waiting_for_fullname)
-    dp.register_callback_query_handler(process_admin_issue_response, lambda c: c.data.startswith(('approve_issue_', 'reject_issue_')))
+    dp.register_callback_query_handler(process_admin_issue_response, lambda c: c.data.startswith(('approve_', 'reject_')))
     dp.register_callback_query_handler(search_tools_start, lambda c: c.data == "search")
     dp.register_message_handler(process_search, state=SearchState.waiting_for_query)
     dp.register_callback_query_handler(show_return_menu, lambda c: c.data == "return")
