@@ -1201,9 +1201,9 @@ if __name__ == '__main__':
     web.run_app(
         app,
         host='0.0.0.0',
-        port=os.getenv('PORT', default=8080),
-        on_startup=[on_startup],
-        on_shutdown=[on_shutdown]
+        port=int(os.getenv('PORT', 8080)),
+        on_startup=on_startup,
+        on_shutdown=on_shutdown
     )
 
 @dp.message_handler(content_types=['photo'], state=ReturnToolStates.waiting_for_photo)
