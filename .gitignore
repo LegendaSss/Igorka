@@ -29,7 +29,11 @@ ENV/
 .vscode/
 
 # Project specific
-config.py
 *.db
 photos/
 *.log
+
+# Исключаем все .env файлы, кроме .env.example
+.env
+!.env
+!.env.example
