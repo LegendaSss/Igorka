@@ -1,18 +1,10 @@
 import logging
-import os
-from datetime import datetime
-import asyncio
-from typing import Optional, Dict, Any
-
-from aiogram import Bot, Dispatcher, Router, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, PhotoSize
-from aiogram.filters import Command, StateFilter
-from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
-from aiohttp import web
-
+from aiogram import Bot, Dispatcher, executor, types
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.contrib.middlewares.logging import LoggingMiddleware
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
+from aiogram.dispatcher import FSMContext
+from aiogram.dispatcher.filters.state import State, StatesGroup
 from db import (
     get_tools, get_issued_tools, create_tool_request, 
     approve_issue_request, get_issue_request_info, get_tool_by_id,
@@ -20,8 +12,12 @@ from db import (
     get_tool_history, get_overdue_tools, get_all_issue_requests,
     create_tables, get_return_info, complete_return
 )
-from config import API_TOKEN, ADMIN_ID
+from config import API_TOKEN
+from datetime import datetime
+import os
+from aiohttp import web
 from populate_database import populate_database
+import time
 
 # Настройка логирования
 logging.basicConfig(
@@ -32,16 +28,15 @@ logger = logging.getLogger(__name__)
 
 # Инициализация бота и диспетчера
 TOKEN = API_TOKEN
+ADMIN_ID = 1495719377  # ID администратора
+
 storage = MemoryStorage()
 bot = Bot(token=TOKEN)
-dp = Dispatcher(storage=storage)
-router = Router()
-dp.include_router(router)
+dp = Dispatcher(bot, storage=storage)
 
-# Создаем папку для фотографий, если её нет
-PHOTOS_DIR = os.path.join(os.getcwd(), 'photos')
-if not os.path.exists(PHOTOS_DIR):
-    os.makedirs(PHOTOS_DIR)
+# Устанавливаем экземпляр бота как текущий
+Bot.set_current(bot)
+Dispatcher.set_current(dp)
 
 # Проверяем содержимое базы данных при запуске
 logger.info("Проверка базы данных при запуске...")
@@ -50,10 +45,22 @@ logger.info(f"Количество инструментов в базе: {len(to
 if tools:
     logger.info("Примеры инструментов:")
     for tool in tools[:5]:  # Показываем первые 5 инструментов
-        logger.info(f"- {tool['name']}")
+        logger.info(f"- {tool}")
+else:
+    logger.info("База данных пуста, заполняем начальными данными...")
+    populate_database()
+    tools = get_tools()
+    logger.info(f"После заполнения в базе {len(tools)} инструментов")
+    if tools:
+        logger.info("Примеры добавленных инструментов:")
+        for tool in tools[:5]:
+            logger.info(f"- {tool}")
 
 # Создание таблиц
 create_tables()
+
+# Регистрируем логирование
+dp.middleware.setup(LoggingMiddleware())
 
 # Состояния для возврата
 class ToolReturnState(StatesGroup):
@@ -78,13 +85,13 @@ TOOLS_PER_PAGE = 10
 # Словарь для отслеживания последних callback-запросов
 _last_callback_time = {}
 
-async def throttle_callback(callback_query: CallbackQuery) -> bool:
+async def throttle_callback(callback_query: types.CallbackQuery) -> bool:
     """
     Проверяет, не слишком ли часто отправляются callback-запросы.
     Возвращает True, если запрос нужно обработать, False если его нужно пропустить.
     """
     user_id = callback_query.from_user.id
-    current_time = datetime.now().timestamp()
+    current_time = time.time()
     
     # Проверяем время последнего запроса
     if user_id in _last_callback_time:
@@ -98,8 +105,8 @@ async def throttle_callback(callback_query: CallbackQuery) -> bool:
     return True
 
 # Старт
-@router.message(Command("start"))
-async def start(message: Message):
+@dp.message_handler(commands=["start"])
+async def start(message: types.Message):
     keyboard = InlineKeyboardMarkup(row_width=2)
     
     # Обычные кнопки для всех пользователей
@@ -147,8 +154,8 @@ async def start(message: Message):
         parse_mode="Markdown"
     )
 
-@router.callback_query(F.data == "help")
-async def show_help(callback_query: CallbackQuery):
+@dp.callback_query_handler(lambda c: c.data == "help")
+async def show_help(callback_query: types.CallbackQuery):
     help_text = (
         "ℹ️ *Как пользоваться ботом*\n\n"
         "*1. Просмотр инструментов*\n"
@@ -175,8 +182,8 @@ async def show_help(callback_query: CallbackQuery):
     await callback_query.message.reply(help_text, reply_markup=keyboard, parse_mode="Markdown")
     await callback_query.answer()
 
-@router.callback_query(F.data == "main_menu")
-async def main_menu(callback_query: CallbackQuery):
+@dp.callback_query_handler(lambda c: c.data == "main_menu")
+async def main_menu(callback_query: types.CallbackQuery):
     try:
         keyboard = InlineKeyboardMarkup(row_width=2)
         keyboard.add(
@@ -228,8 +235,8 @@ async def main_menu(callback_query: CallbackQuery):
         except:
             pass
 
-@router.callback_query(F.data == "tools" | F.data.startswith("tools_page_"))
-async def show_tools(callback_query: CallbackQuery):
+@dp.callback_query_handler(lambda c: c.data == "tools" or c.data.startswith("tools_page_"))
+async def show_tools(callback_query: types.CallbackQuery):
     # Сразу отвечаем на callback
     await callback_query.answer()
     
@@ -306,8 +313,8 @@ async def show_tools(callback_query: CallbackQuery):
     
     await callback_query.message.reply(response, reply_markup=keyboard, parse_mode="Markdown")
 
-@router.callback_query(F.data.startswith("select_tool_"))
-async def select_tool(callback_query: CallbackQuery):
+@dp.callback_query_handler(lambda c: c.data.startswith("select_tool_"))
+async def select_tool(callback_query: types.CallbackQuery):
     try:
         tool_id = int(callback_query.data.split("_")[2])
         
@@ -338,8 +345,8 @@ async def select_tool(callback_query: CallbackQuery):
         except:
             pass
 
-@router.message(StateFilter(ToolIssueState.waiting_for_fullname))
-async def process_employee_fullname(message: Message, state: FSMContext):
+@dp.message_handler(state=ToolIssueState.waiting_for_fullname)
+async def process_employee_fullname(message: types.Message):
     # Получаем состояние для текущего пользователя
     state = dp.current_state(user=message.from_user.id)
     
@@ -387,8 +394,8 @@ async def process_employee_fullname(message: Message, state: FSMContext):
     else:
         await message.answer("❌ Произошла ошибка при создании запроса. Попробуйте позже.")
 
-@router.callback_query(F.data.startswith(("approve_", "reject_")))
-async def process_admin_issue_response(callback_query: CallbackQuery):
+@dp.callback_query_handler(lambda c: c.data.startswith(("approve_", "reject_")))
+async def process_admin_issue_response(callback_query: types.CallbackQuery):
     logger.info(f"DEBUG: Получен callback: {callback_query.data}")
     
     try:
@@ -453,15 +460,15 @@ async def process_admin_issue_response(callback_query: CallbackQuery):
         logger.error(f"DEBUG: Необработанная ошибка: {str(e)}")
         await callback_query.answer("❌ Произошла ошибка")
 
-@router.callback_query(F.data == "search_tools")
-async def search_tools_start(callback_query: CallbackQuery):
+@dp.callback_query_handler(lambda c: c.data == "search_tools")
+async def search_tools_start(callback_query: types.CallbackQuery):
     # Сразу отвечаем на callback
     await callback_query.answer()
     await SearchState.waiting_for_query.set()
     await callback_query.message.reply("🔍 Введите название инструмента:")
 
-@router.message(StateFilter(SearchState.waiting_for_query))
-async def process_search(message: Message, state: FSMContext):
+@dp.message_handler(state=SearchState.waiting_for_query)
+async def process_search(message: types.Message, state: FSMContext):
     query = message.text.lower()
     tools = get_tools()
     
@@ -488,8 +495,8 @@ async def process_search(message: Message, state: FSMContext):
         await message.reply(response, reply_markup=keyboard, parse_mode="Markdown")
     await state.finish()
 
-@router.callback_query(F.data == "return")
-async def show_return_menu(callback_query: CallbackQuery):
+@dp.callback_query_handler(lambda c: c.data == "return")
+async def show_return_menu(callback_query: types.CallbackQuery):
     """Показать меню возврата инструментов"""
     try:
         logger.info("DEBUG: Получение списка выданных инструментов")
@@ -545,8 +552,8 @@ async def show_return_menu(callback_query: CallbackQuery):
             )
         )
 
-@router.callback_query(F.data.startswith("return_tool_"))
-async def return_tool(callback_query: CallbackQuery):
+@dp.callback_query_handler(lambda c: c.data.startswith("return_tool_"))
+async def return_tool(callback_query: types.CallbackQuery):
     try:
         logging.info(f"DEBUG: Вызвана функция возврата инструмента с callback_data={callback_query.data}")
         tool_id = int(callback_query.data.split('_')[2])
@@ -600,8 +607,8 @@ async def return_tool(callback_query: CallbackQuery):
         )
         await callback_query.answer()
 
-@router.callback_query(F.data == "cancel_return", StateFilter(ReturnToolStates.waiting_for_photo))
-async def cancel_return(callback_query: CallbackQuery, state: FSMContext):
+@dp.callback_query_handler(lambda c: c.data == "cancel_return", state=ReturnToolStates.waiting_for_photo)
+async def cancel_return(callback_query: types.CallbackQuery, state: FSMContext):
     try:
         logging.info("DEBUG: Отмена возврата инструмента")
         await state.finish()
@@ -623,8 +630,8 @@ async def cancel_return(callback_query: CallbackQuery, state: FSMContext):
         )
         await callback_query.answer()
 
-@router.callback_query(F.data.startswith('reject_return_'))
-async def reject_return(callback_query: CallbackQuery):
+@dp.callback_query_handler(lambda c: c.data.startswith('reject_return_'))
+async def reject_return(callback_query: types.CallbackQuery):
     try:
         logging.info(f"DEBUG: Получен callback для отклонения возврата: {callback_query.data}")
         # Parse callback data
@@ -680,18 +687,18 @@ async def reject_return(callback_query: CallbackQuery):
             )
         )
 
-@router.callback_query(F.data == "main_menu")
-async def show_main_menu(callback_query: CallbackQuery):
+@dp.callback_query_handler(lambda c: c.data == "main_menu")
+async def show_main_menu(callback_query: types.CallbackQuery):
     await callback_query.answer()
     await show_welcome(callback_query.message)
 
-@router.callback_query(F.data == "help")
-async def show_help_command(callback_query: CallbackQuery):
+@dp.callback_query_handler(lambda c: c.data == "help")
+async def show_help_command(callback_query: types.CallbackQuery):
     await callback_query.answer()
     await show_help(callback_query.message)
 
-@router.callback_query(F.data == "search_tools")
-async def search_tools_command(callback_query: CallbackQuery):
+@dp.callback_query_handler(lambda c: c.data == "search_tools")
+async def search_tools_command(callback_query: types.CallbackQuery):
     await callback_query.answer()
     await callback_query.message.edit_text(
         "🔍 Введите название или часть названия инструмента для поиска:",
@@ -699,8 +706,8 @@ async def search_tools_command(callback_query: CallbackQuery):
     )
     await ToolSearch.waiting_for_query.set()
 
-@router.callback_query(F.data == "admin_history")
-async def show_admin_history(callback_query: CallbackQuery):
+@dp.callback_query_handler(lambda c: c.data == "admin_history")
+async def show_admin_history(callback_query: types.CallbackQuery):
     if callback_query.from_user.id != ADMIN_ID:
         await callback_query.answer("⛔ У вас нет доступа к этой функции.")
         return
@@ -728,8 +735,8 @@ async def show_admin_history(callback_query: CallbackQuery):
         parse_mode="Markdown"
     )
 
-@router.callback_query(F.data == "admin_overdue")
-async def show_overdue_tools(callback_query: CallbackQuery):
+@dp.callback_query_handler(lambda c: c.data == "admin_overdue")
+async def show_overdue_tools(callback_query: types.CallbackQuery):
     if callback_query.from_user.id != ADMIN_ID:
         await callback_query.answer("⛔ У вас нет доступа к этой функции.")
         return
@@ -758,13 +765,13 @@ async def show_overdue_tools(callback_query: CallbackQuery):
         parse_mode="Markdown"
     )
 
-@router.callback_query(F.data == "tools")
-async def show_tools_command(callback_query: CallbackQuery):
+@dp.callback_query_handler(lambda c: c.data == "tools")
+async def show_tools_command(callback_query: types.CallbackQuery):
     await callback_query.answer()
     await show_tools(callback_query.message)
 
-@router.callback_query(F.data == "return")
-async def return_tool_command(callback_query: CallbackQuery):
+@dp.callback_query_handler(lambda c: c.data == "return")
+async def return_tool_command(callback_query: types.CallbackQuery):
     await callback_query.answer()
     issued_tools = get_issued_tools()
     
@@ -795,8 +802,8 @@ async def return_tool_command(callback_query: CallbackQuery):
         parse_mode="Markdown"
     )
 
-@router.callback_query(F.data == "admin_report")
-async def show_admin_report(callback_query: CallbackQuery):
+@dp.callback_query_handler(lambda c: c.data == "admin_report")
+async def show_admin_report(callback_query: types.CallbackQuery):
     if callback_query.from_user.id != ADMIN_ID:
         await callback_query.answer("⛔ У вас нет доступа к этой функции.")
         return
@@ -828,8 +835,8 @@ async def show_admin_report(callback_query: CallbackQuery):
         parse_mode="Markdown"
     )
 
-@router.callback_query(F.data == "admin_issued")
-async def show_admin_issued(callback_query: CallbackQuery):
+@dp.callback_query_handler(lambda c: c.data == "admin_issued")
+async def show_admin_issued(callback_query: types.CallbackQuery):
     if callback_query.from_user.id != ADMIN_ID:
         await callback_query.answer("⛔ У вас нет доступа к этой функции.")
         return
@@ -857,8 +864,8 @@ async def show_admin_issued(callback_query: CallbackQuery):
         parse_mode="Markdown"
     )
 
-@router.callback_query(F.data == "main_menu")
-async def show_main_menu(callback_query: CallbackQuery):
+@dp.callback_query_handler(lambda c: c.data == "main_menu")
+async def show_main_menu(callback_query: types.CallbackQuery):
     try:
         keyboard = InlineKeyboardMarkup(row_width=2)
         
@@ -888,8 +895,8 @@ async def show_main_menu(callback_query: CallbackQuery):
             )
         )
 
-@router.callback_query(F.data == "tools")
-async def show_tools_command(callback_query: CallbackQuery):
+@dp.callback_query_handler(lambda c: c.data == "tools")
+async def show_tools_command(callback_query: types.CallbackQuery):
     try:
         logger.info("DEBUG: Вызвана функция show_tools с callback_data=tools")
         tools = get_tools()
@@ -956,8 +963,8 @@ async def show_tools_command(callback_query: CallbackQuery):
             )
         )
 
-@router.callback_query(F.data.startswith("select_tool_"))
-async def select_tool_command(callback_query: CallbackQuery):
+@dp.callback_query_handler(lambda c: c.data.startswith("select_tool_"))
+async def select_tool_command(callback_query: types.CallbackQuery):
     try:
         tool_id = int(callback_query.data.replace("select_tool_", ""))
         
@@ -1024,57 +1031,8 @@ async def select_tool_command(callback_query: CallbackQuery):
             )
         )
 
-@router.message(StateFilter(ToolIssueState.waiting_for_fullname))
-async def process_employee_fullname(message: Message, state: FSMContext):
-    # Получаем состояние для текущего пользователя
-    state = dp.current_state(user=message.from_user.id)
-    
-    employee_fullname = message.text.strip()
-    
-    # Получаем данные из состояния
-    data = await state.get_data()
-    tool_id = data.get('tool_id')
-    
-    # Сбрасываем состояние
-    await state.finish()
-    
-    # Создаем запрос на выдачу инструмента
-    if create_tool_request(tool_id, employee_fullname, message.chat.id):
-        # Получаем информацию об инструменте
-        tools = get_tools()
-        tool_name = next((tool[1] for tool in tools if tool[0] == tool_id), "Неизвестный инструмент")
-        
-        # Отправляем сообщение сотруднику
-        await message.answer(
-            "✅ Ваш запрос на получение инструмента отправлен администратору.\n"
-            f"*Инструмент:* {tool_name}\n"
-            f"*ФИО:* {employee_fullname}\n\n"
-            "Ожидайте подтверждения.",
-            parse_mode="Markdown"
-        )
-        
-        # Создаем клавиатуру для админа
-        admin_keyboard = InlineKeyboardMarkup(row_width=2)
-        admin_keyboard.add(
-            InlineKeyboardButton("✅ Одобрить", callback_data=f"approve_{tool_id}_{message.chat.id}"),
-            InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{tool_id}_{message.chat.id}")
-        )
-        
-        # Отправляем уведомление админу
-        await bot.send_message(
-            ADMIN_ID,
-            f"📝 *Новый запрос на получение инструмента*\n\n"
-            f"*Инструмент:* {tool_name}\n"
-            f"*Сотрудник:* {employee_fullname}\n"
-            f"*Чат ID:* {message.chat.id}",
-            reply_markup=admin_keyboard,
-            parse_mode="Markdown"
-        )
-    else:
-        await message.answer("❌ Произошла ошибка при создании запроса. Попробуйте позже.")
-
-@router.callback_query(F.data == "cancel_issue", StateFilter(ToolIssueState.waiting_for_fullname))
-async def cancel_issue(callback_query: CallbackQuery, state: FSMContext):
+@dp.callback_query_handler(lambda c: c.data == "cancel_issue", state=ToolIssueState.waiting_for_fullname)
+async def cancel_issue(callback_query: types.CallbackQuery, state: FSMContext):
     await state.finish()
     await callback_query.answer("Выдача инструмента отменена")
     await callback_query.message.edit_text(
@@ -1088,55 +1046,226 @@ async def cancel_issue(callback_query: CallbackQuery, state: FSMContext):
 WEBHOOK_HOST = 'https://igorka.onrender.com'
 WEBHOOK_PATH = '/webhook'
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
-WEBAPP_HOST = "0.0.0.0"
-WEBAPP_PORT = int(os.environ.get('PORT', 8080))
 
-# Настройка веб-приложения
 app = web.Application()
 
-async def on_startup(bot: Bot):
+async def on_startup(app):
+    """Установка вебхука при запуске"""
+    webhook_info = await bot.get_webhook_info()
+    if webhook_info.url != WEBHOOK_URL:
+        await bot.set_webhook(WEBHOOK_URL)
+    logger.info("Bot started")
+
+async def on_shutdown(app):
+    """Отключение вебхука при выключении"""
+    await bot.delete_webhook()
+    await bot.close()
+    logger.info("Bot stopped")
+
+async def handle_webhook(request):
+    """Обработчик вебхука"""
+    # Проверяем подпись запроса от Telegram
+    update = types.Update(**await request.json())
+    await dp.process_update(update)
+    return web.Response(status=200)
+
+def setup_routes(app: web.Application):
+    app.router.add_post(WEBHOOK_PATH, handle_webhook)
+
+if __name__ == '__main__':
     # Создаем таблицы при запуске
     create_tables()
     
-    # Проверяем наличие инструментов
-    tools = get_tools()
-    if not tools:
-        logger.info("База данных пуста, заполняем начальными данными...")
-        populate_database()
+    # Настраиваем маршруты
+    setup_routes(app)
     
-    # Устанавливаем вебхук
-    await bot.set_webhook(
-        url=WEBHOOK_URL,
-        secret_token=API_TOKEN[:50]  # Используем первые 50 символов токена как секрет
-    )
-    logger.info(f"Webhook установлен на {WEBHOOK_URL}")
-
-async def on_shutdown(bot: Bot):
-    # Удаляем вебхук при выключении
-    await bot.delete_webhook()
-    logger.info("Webhook удален")
-
-def main():
-    # Создаем приложение
-    app = web.Application()
-
-    # Настраиваем вебхук
-    webhook_handler = SimpleRequestHandler(
-        dispatcher=dp,
-        bot=bot,
-        secret_token=API_TOKEN[:50]  # Тот же секрет, что и при установке вебхука
-    )
-    webhook_handler.register(app, path=WEBHOOK_PATH)
-
-    # Настраиваем события запуска/остановки
-    setup_application(app, dp, bot=bot)
-
-    # Добавляем обработчики запуска/остановки
-    dp.startup.register(on_startup)
-    dp.shutdown.register(on_shutdown)
-
+    # Добавляем обработчики запуска и остановки
+    app.on_startup.append(on_startup)
+    app.on_shutdown.append(on_shutdown)
+    
     # Запускаем веб-сервер
-    web.run_app(app, host=WEBAPP_HOST, port=WEBAPP_PORT)
+    web.run_app(app, host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
 
-if __name__ == '__main__':
-    main()
+@dp.message_handler(content_types=['photo'], state=ReturnToolStates.waiting_for_photo)
+async def process_return_photo(message: types.Message, state: FSMContext):
+    """Обработчик фотографии для возврата инструмента"""
+    try:
+        if not message.photo:
+            await message.reply(
+                "❌ Пожалуйста, отправьте фотографию инструмента.\n"
+                "Сообщение должно содержать фото, а не файл или текст.",
+                reply_markup=get_cancel_keyboard()
+            )
+            return
+
+        # Получаем самое качественное фото из списка
+        photo = max(message.photo, key=lambda p: p.width * p.height)
+        
+        # Проверяем размер фото
+        if photo.width * photo.height < 300000:  # минимум ~500x600 пикселей
+            await message.reply(
+                "❌ Фотография слишком маленького размера.\n"
+                "Пожалуйста, отправьте более качественное фото, чтобы можно было "
+                "хорошо рассмотреть состояние инструмента.",
+                reply_markup=get_cancel_keyboard()
+            )
+            return
+
+        # Получаем данные из состояния
+        data = await state.get_data()
+        issue_id = data.get('tool_id')
+        
+        if not issue_id:
+            await message.reply(
+                "❌ Произошла ошибка: не найден ID инструмента.\n"
+                "Пожалуйста, начните процесс возврата заново.",
+                reply_markup=get_main_keyboard(message.from_user.id)
+            )
+            await state.finish()
+            return
+
+        # Получаем информацию о возврате
+        return_info = get_return_info(issue_id)
+        if not return_info:
+            await message.reply(
+                "❌ Не удалось найти информацию об инструменте.\n"
+                "Возможно, он уже был возвращен или заявка была отменена.",
+                reply_markup=get_main_keyboard(message.from_user.id)
+            )
+            await state.finish()
+            return
+
+        tool_name = return_info[0]
+        employee_name = return_info[1]
+
+        # Отправляем фото администратору
+        await bot.send_photo(
+            ADMIN_ID,
+            photo.file_id,
+            caption=(
+                f"📸 Фото для возврата инструмента\n\n"
+                f"🔧 Инструмент: *{tool_name}*\n"
+                f"👤 Сотрудник: *{employee_name}*\n"
+                f"📅 Дата возврата: *{datetime.now().strftime('%d.%m.%Y %H:%M')}*"
+            ),
+            parse_mode="Markdown",
+            reply_markup=get_return_approval_keyboard(issue_id, message.chat.id)
+        )
+
+        # Уведомляем пользователя
+        await message.reply(
+            "✅ Фото отправлено на проверку администратору.\n"
+            "Пожалуйста, ожидайте подтверждения возврата.",
+            reply_markup=get_main_keyboard(message.from_user.id)
+        )
+
+        # Завершаем состояние
+        await state.finish()
+
+    except Exception as e:
+        logging.error(f"Ошибка при обработке фото возврата: {e}")
+        await message.reply(
+            "❌ Произошла ошибка при обработке фото.\n"
+            "Пожалуйста, попробуйте еще раз или обратитесь к администратору.",
+            reply_markup=get_main_keyboard(message.from_user.id)
+        )
+        await state.finish()
+
+@dp.callback_query_handler(lambda c: c.data.startswith('approve_'))
+async def approve_return(callback_query: types.CallbackQuery):
+    """Подтверждение возврата инструмента администратором"""
+    try:
+        # Проверяем, что callback от админа
+        if str(callback_query.from_user.id) != ADMIN_ID:
+            await callback_query.answer("❌ У вас нет прав для этого действия", show_alert=True)
+            return
+
+        # Получаем ID инструмента и чата пользователя
+        _, tool_id, user_chat_id = callback_query.data.split('_')
+        tool_id = int(tool_id)
+        user_chat_id = int(user_chat_id)
+
+        logging.info(f"DEBUG: Получен callback: {callback_query.data}")
+        logging.info(f"DEBUG: Обработка approve для tool_id={tool_id}, chat_id={user_chat_id}")
+
+        # Получаем информацию о возврате
+        return_info = get_return_info(tool_id)
+        logging.info(f"DEBUG: Информация о запросе: {return_info}")
+
+        if not return_info:
+            await callback_query.answer("❌ Информация о возврате не найдена", show_alert=True)
+            return
+
+        # Обновляем статус в БД
+        approve_tool_return(tool_id, return_info[1])
+        logging.info("DEBUG: Запрос успешно одобрен")
+
+        # Уведомляем пользователя
+        await bot.send_message(
+            user_chat_id,
+            f"✅ Возврат инструмента *{return_info[0]}* подтвержден!\n"
+            f"Спасибо за своевременный возврат.",
+            parse_mode="Markdown",
+            reply_markup=get_main_keyboard(user_chat_id)
+        )
+
+        # Обновляем сообщение админа
+        await callback_query.message.edit_caption(
+            f"{callback_query.message.caption}\n\n"
+            "✅ *Возврат подтвержден*",
+            parse_mode="Markdown"
+        )
+        
+        await callback_query.answer("✅ Возврат подтвержден")
+
+    except Exception as e:
+        logging.error(f"Ошибка при подтверждении возврата: {e}")
+        await callback_query.answer("❌ Произошла ошибка при подтверждении возврата", show_alert=True)
+
+@dp.callback_query_handler(lambda c: c.data.startswith('reject_'))
+async def reject_return(callback_query: types.CallbackQuery):
+    """Отклонение возврата инструмента администратором"""
+    try:
+        # Проверяем, что callback от админа
+        if str(callback_query.from_user.id) != ADMIN_ID:
+            await callback_query.answer("❌ У вас нет прав для этого действия", show_alert=True)
+            return
+
+        # Получаем ID инструмента и чата пользователя
+        _, tool_id, user_chat_id = callback_query.data.split('_')
+        tool_id = int(tool_id)
+        user_chat_id = int(user_chat_id)
+
+        # Получаем информацию о возврате
+        return_info = get_return_info(tool_id)
+        if not return_info:
+            await callback_query.answer("❌ Информация о возврате не найдена", show_alert=True)
+            return
+
+        # Обновляем сообщение админа
+        await callback_query.message.edit_caption(
+            f"{callback_query.message.caption}\n\n"
+            "❌ *Возврат отклонен*",
+            parse_mode="Markdown"
+        )
+
+        # Уведомляем пользователя
+        await bot.send_message(
+            user_chat_id,
+            f"❌ Возврат инструмента *{return_info[0]}* отклонен.\n\n"
+            "Причины отклонения могут быть следующими:\n"
+            "• Недостаточно четкое фото\n"
+            "• Не видно серийного номера\n"
+            "• Не показана комплектность\n"
+            "• Видны повреждения\n"
+            "• Инструмент загрязнен\n\n"
+            "Пожалуйста, исправьте указанные проблемы и попробуйте вернуть инструмент снова.",
+            parse_mode="Markdown",
+            reply_markup=get_main_keyboard(user_chat_id)
+        )
+
+        await callback_query.answer("Возврат отклонен")
+
+    except Exception as e:
+        logging.error(f"Ошибка при отклонении возврата: {e}")
+        await callback_query.answer("❌ Произошла ошибка при отклонении возврата", show_alert=True)
