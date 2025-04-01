@@ -1072,62 +1072,6 @@ async def handle_webhook(request):
 def setup_routes(app: web.Application):
     app.router.add_post(WEBHOOK_PATH, handle_webhook)
 
-if __name__ == '__main__':
-    # Создаем таблицы при запуске
-    create_tables()
-    
-    # Проверяем базу данных при запуске
-    logging.info('Проверка базы данных при запуске...')
-    tools = get_tools()
-    logging.info(f'Количество инструментов в базе: {len(tools)}')
-    
-    if len(tools) == 0:
-        logging.info('База данных пуста, заполняем начальными данными...')
-        populate_database()
-        tools = get_tools()
-        logging.info(f'После заполнения в базе {len(tools)} инструментов')
-        logging.info('Примеры добавленных инструментов:')
-        for tool in tools[:5]:
-            logging.info(f'- {tool}')
-
-    # Создаем экземпляр бота
-    bot = Bot(token=API_TOKEN)
-    storage = MemoryStorage()
-    dp = Dispatcher(bot, storage=storage)
-    dp.middleware.setup(LoggingMiddleware())
-    
-    # Регистрируем все обработчики
-    def register_handlers(dp: Dispatcher):
-        dp.register_callback_query_handler(show_tools, lambda c: c.data == 'tools')
-        dp.register_callback_query_handler(select_tool, lambda c: c.data.startswith('select_tool_'))
-        dp.register_callback_query_handler(show_main_menu, lambda c: c.data == 'main_menu')
-        dp.register_callback_query_handler(process_admin_issue_response, lambda c: c.data.startswith(('approve_', 'reject_')))
-        dp.register_callback_query_handler(show_help, lambda c: c.data == 'help')
-        dp.register_callback_query_handler(search_tools_start, lambda c: c.data == 'search')
-        dp.register_callback_query_handler(show_return_menu, lambda c: c.data == 'return')
-        dp.register_callback_query_handler(return_tool, lambda c: c.data.startswith('return_tool_'))
-        dp.register_callback_query_handler(approve_return, lambda c: c.data.startswith('approve_return_'))
-        dp.register_callback_query_handler(reject_return, lambda c: c.data.startswith('reject_return_'))
-        dp.register_callback_query_handler(lambda c: c.data == "unknown", lambda c: True)
-    
-    register_handlers(dp)
-    
-    # Настраиваем веб-сервер
-    app = web.Application()
-    setup_routes(app)
-    
-    # Запускаем бота
-    logging.info('Bot started')
-    
-    # Запускаем веб-сервер
-    web.run_app(
-        app,
-        host='0.0.0.0',
-        port=os.getenv('PORT', default=8080),
-        on_startup=[on_startup],
-        on_shutdown=[on_shutdown]
-    )
-
 @dp.callback_query_handler(lambda c: c.data.startswith('approve_return_'))
 async def approve_return(callback_query: types.CallbackQuery):
     try:
@@ -1202,6 +1146,65 @@ async def approve_return(callback_query: types.CallbackQuery):
         await callback_query.answer("❌ Произошла ошибка при обработке подтверждения")
         
     await callback_query.answer()
+
+def register_handlers(dp: Dispatcher):
+    dp.register_message_handler(start, commands=['start'])
+    dp.register_callback_query_handler(show_help, lambda c: c.data == "help")
+    dp.register_callback_query_handler(main_menu, lambda c: c.data == "main_menu")
+    dp.register_callback_query_handler(show_tools, lambda c: c.data == "show_tools")
+    dp.register_callback_query_handler(select_tool, lambda c: c.data.startswith('select_tool_'))
+    dp.register_message_handler(process_employee_fullname, state=ToolIssueState.waiting_for_fullname)
+    dp.register_callback_query_handler(process_admin_issue_response, lambda c: c.data.startswith(('approve_issue_', 'reject_issue_')))
+    dp.register_callback_query_handler(search_tools_start, lambda c: c.data == "search_tools")
+    dp.register_message_handler(process_search, state=SearchState.waiting_for_query)
+    dp.register_callback_query_handler(show_return_menu, lambda c: c.data == "return_tool")
+    dp.register_callback_query_handler(return_tool, lambda c: c.data.startswith('return_tool_'))
+    dp.register_callback_query_handler(approve_return, lambda c: c.data.startswith('approve_return_'))
+    dp.register_callback_query_handler(reject_return, lambda c: c.data.startswith('reject_return_'))
+    dp.register_callback_query_handler(cancel_return, lambda c: c.data == "cancel_return", state=ReturnToolStates.waiting_for_photo)
+
+if __name__ == '__main__':
+    # Создаем таблицы при запуске
+    create_tables()
+    
+    # Проверяем базу данных при запуске
+    logging.info('Проверка базы данных при запуске...')
+    tools = get_tools()
+    logging.info(f'Количество инструментов в базе: {len(tools)}')
+    
+    if len(tools) == 0:
+        logging.info('База данных пуста, заполняем начальными данными...')
+        populate_database()
+        tools = get_tools()
+        logging.info(f'После заполнения в базе {len(tools)} инструментов')
+        logging.info('Примеры добавленных инструментов:')
+        for tool in tools[:5]:
+            logging.info(f'- {tool}')
+
+    # Создаем экземпляр бота
+    bot = Bot(token=API_TOKEN)
+    storage = MemoryStorage()
+    dp = Dispatcher(bot, storage=storage)
+    dp.middleware.setup(LoggingMiddleware())
+    
+    # Регистрируем все обработчики
+    register_handlers(dp)
+    
+    # Настраиваем веб-сервер
+    app = web.Application()
+    setup_routes(app)
+    
+    # Запускаем бота
+    logging.info('Bot started')
+    
+    # Запускаем веб-сервер
+    web.run_app(
+        app,
+        host='0.0.0.0',
+        port=os.getenv('PORT', default=8080),
+        on_startup=[on_startup],
+        on_shutdown=[on_shutdown]
+    )
 
 @dp.message_handler(content_types=['photo'], state=ReturnToolStates.waiting_for_photo)
 async def process_return_photo(message: types.Message, state: FSMContext):
