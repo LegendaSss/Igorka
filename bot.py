@@ -625,7 +625,7 @@ async def cancel_return(callback_query: types.CallbackQuery, state: FSMContext):
         await callback_query.message.edit_text(
             "❌ Произошла ошибка при отмене возврата",
             reply_markup=InlineKeyboardMarkup().add(
-                InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
+                InlineKeyboardButton("🏠 В главное меню", callback_query="main_menu")
             )
         )
         await callback_query.answer()
@@ -1076,196 +1076,190 @@ if __name__ == '__main__':
     # Создаем таблицы при запуске
     create_tables()
     
-    # Настраиваем маршруты
+    # Проверяем базу данных при запуске
+    logging.info('Проверка базы данных при запуске...')
+    tools = get_tools()
+    logging.info(f'Количество инструментов в базе: {len(tools)}')
+    
+    if len(tools) == 0:
+        logging.info('База данных пуста, заполняем начальными данными...')
+        populate_database()
+        tools = get_tools()
+        logging.info(f'После заполнения в базе {len(tools)} инструментов')
+        logging.info('Примеры добавленных инструментов:')
+        for tool in tools[:5]:
+            logging.info(f'- {tool}')
+
+    # Создаем экземпляр бота
+    bot = Bot(token=API_TOKEN)
+    storage = MemoryStorage()
+    dp = Dispatcher(bot, storage=storage)
+    dp.middleware.setup(LoggingMiddleware())
+    
+    # Регистрируем все обработчики
+    def register_handlers(dp: Dispatcher):
+        dp.register_callback_query_handler(show_tools, lambda c: c.data == 'tools')
+        dp.register_callback_query_handler(select_tool, lambda c: c.data.startswith('select_tool_'))
+        dp.register_callback_query_handler(show_main_menu, lambda c: c.data == 'main_menu')
+        dp.register_callback_query_handler(process_admin_issue_response, lambda c: c.data.startswith(('approve_', 'reject_')))
+        dp.register_callback_query_handler(show_help, lambda c: c.data == 'help')
+        dp.register_callback_query_handler(search_tools_start, lambda c: c.data == 'search')
+        dp.register_callback_query_handler(show_return_menu, lambda c: c.data == 'return')
+        dp.register_callback_query_handler(return_tool, lambda c: c.data.startswith('return_tool_'))
+        dp.register_callback_query_handler(approve_return, lambda c: c.data.startswith('approve_return_'))
+        dp.register_callback_query_handler(reject_return, lambda c: c.data.startswith('reject_return_'))
+        dp.register_callback_query_handler(lambda c: c.data == "unknown", lambda c: True)
+    
+    register_handlers(dp)
+    
+    # Настраиваем веб-сервер
+    app = web.Application()
     setup_routes(app)
     
-    # Добавляем обработчики запуска и остановки
-    app.on_startup.append(on_startup)
-    app.on_shutdown.append(on_shutdown)
+    # Запускаем бота
+    logging.info('Bot started')
     
     # Запускаем веб-сервер
-    web.run_app(app, host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
+    web.run_app(
+        app,
+        host='0.0.0.0',
+        port=os.getenv('PORT', default=8080),
+        on_startup=[on_startup],
+        on_shutdown=[on_shutdown]
+    )
 
-@dp.message_handler(content_types=['photo'], state=ReturnToolStates.waiting_for_photo)
-async def process_return_photo(message: types.Message, state: FSMContext):
-    """Обработчик фотографии для возврата инструмента"""
+@dp.callback_query_handler(lambda c: c.data.startswith('approve_return_'))
+async def approve_return(callback_query: types.CallbackQuery):
     try:
-        if not message.photo:
-            await message.reply(
-                "❌ Пожалуйста, отправьте фотографию инструмента.\n"
-                "Сообщение должно содержать фото, а не файл или текст.",
-                reply_markup=get_cancel_keyboard()
-            )
+        logging.info(f"DEBUG: Получен callback для подтверждения возврата: {callback_query.data}")
+        # Parse callback data
+        data = callback_query.data.split('_')
+        if len(data) != 4:
+            logging.error(f"DEBUG: Неверный формат callback data: {callback_query.data}")
+            await callback_query.answer("❌ Ошибка: неверный формат данных")
             return
-
-        # Получаем самое качественное фото из списка
-        photo = max(message.photo, key=lambda p: p.width * p.height)
+            
+        issue_id = int(data[2])
+        user_id = int(data[3])
         
-        # Проверяем размер фото
-        if photo.width * photo.height < 300000:  # минимум ~500x600 пикселей
-            await message.reply(
-                "❌ Фотография слишком маленького размера.\n"
-                "Пожалуйста, отправьте более качественное фото, чтобы можно было "
-                "хорошо рассмотреть состояние инструмента.",
-                reply_markup=get_cancel_keyboard()
-            )
-            return
-
-        # Получаем данные из состояния
-        data = await state.get_data()
-        issue_id = data.get('tool_id')
-        
-        if not issue_id:
-            await message.reply(
-                "❌ Произошла ошибка: не найден ID инструмента.\n"
-                "Пожалуйста, начните процесс возврата заново.",
-                reply_markup=get_main_keyboard(message.from_user.id)
-            )
-            await state.finish()
-            return
-
         # Получаем информацию о возврате
         return_info = get_return_info(issue_id)
         if not return_info:
-            await message.reply(
-                "❌ Не удалось найти информацию об инструменте.\n"
-                "Возможно, он уже был возвращен или заявка была отменена.",
-                reply_markup=get_main_keyboard(message.from_user.id)
-            )
-            await state.finish()
+            logging.error(f"DEBUG: Не найдена информация о возврате с ID {issue_id}")
+            await callback_query.answer("❌ Ошибка: информация о возврате не найдена")
             return
+            
+        # Обновляем статус инструмента в БД
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        try:
+            # Получаем tool_id из issued_tools
+            cursor.execute('SELECT tool_id FROM issued_tools WHERE id = ?', (issue_id,))
+            tool_id = cursor.fetchone()[0]
+            
+            # Обновляем статус инструмента на "available"
+            cursor.execute('UPDATE tools SET status = "available" WHERE id = ?', (tool_id,))
+            
+            # Устанавливаем дату возврата
+            cursor.execute('UPDATE issued_tools SET return_date = CURRENT_TIMESTAMP WHERE id = ?', (issue_id,))
+            
+            # Добавляем запись в историю
+            cursor.execute(
+                'INSERT INTO tool_history (tool_id, action, employee_name, timestamp) VALUES (?, ?, ?, CURRENT_TIMESTAMP)',
+                (tool_id, 'returned', return_info[1], )
+            )
+            
+            conn.commit()
+            
+            # Уведомляем администратора
+            await callback_query.message.edit_caption(
+                callback_query.message.caption + "\n\n✅ Возврат подтвержден",
+                reply_markup=None
+            )
+            
+            # Уведомляем пользователя
+            await bot.send_message(
+                user_id,
+                f"✅ Возврат инструмента подтвержден администратором.\n"
+                f"Спасибо за использование системы!",
+                reply_markup=InlineKeyboardMarkup().add(
+                    InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
+                )
+            )
+            
+        except Exception as e:
+            conn.rollback()
+            logging.error(f"Ошибка при обновлении БД: {e}")
+            await callback_query.answer("❌ Ошибка при обновлении базы данных")
+            return
+        finally:
+            cursor.close()
+            conn.close()
+            
+    except Exception as e:
+        logging.error(f"Ошибка при подтверждении возврата: {e}")
+        await callback_query.answer("❌ Произошла ошибка при обработке подтверждения")
+        
+    await callback_query.answer()
 
-        tool_name = return_info[0]
-        employee_name = return_info[1]
-
-        # Отправляем фото администратору
+@dp.message_handler(content_types=['photo'], state=ReturnToolStates.waiting_for_photo)
+async def process_return_photo(message: types.Message, state: FSMContext):
+    try:
+        logging.info("DEBUG: Получено фото для возврата инструмента")
+        
+        # Получаем данные из состояния
+        async with state.proxy() as data:
+            issue_id = data['issue_id']
+            tool_name = data['tool_name']
+            employee = data['employee']
+            
+        # Получаем фото с наилучшим качеством
+        photo = message.photo[-1]
+        file_id = photo.file_id
+        
+        # Создаем клавиатуру для админа
+        admin_keyboard = InlineKeyboardMarkup(row_width=2)
+        admin_keyboard.add(
+            InlineKeyboardButton("✅ Принять", callback_data=f"approve_return_{issue_id}_{message.from_user.id}"),
+            InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_return_{issue_id}_{message.from_user.id}")
+        )
+        
+        # Отправляем фото и информацию админу
+        admin_message = (
+            f"📸 Получена фотография для возврата инструмента\n\n"
+            f"🔧 Инструмент: {tool_name}\n"
+            f"👤 Сотрудник: {employee}\n"
+            f"🆔 ID выдачи: {issue_id}"
+        )
+        
+        # Отправляем сообщение админу
         await bot.send_photo(
-            ADMIN_ID,
-            photo.file_id,
-            caption=(
-                f"📸 Фото для возврата инструмента\n\n"
-                f"🔧 Инструмент: *{tool_name}*\n"
-                f"👤 Сотрудник: *{employee_name}*\n"
-                f"📅 Дата возврата: *{datetime.now().strftime('%d.%m.%Y %H:%M')}*"
-            ),
-            parse_mode="Markdown",
-            reply_markup=get_return_approval_keyboard(issue_id, message.chat.id)
+            chat_id=ADMIN_ID,
+            photo=file_id,
+            caption=admin_message,
+            reply_markup=admin_keyboard
         )
-
-        # Уведомляем пользователя
-        await message.reply(
-            "✅ Фото отправлено на проверку администратору.\n"
-            "Пожалуйста, ожидайте подтверждения возврата.",
-            reply_markup=get_main_keyboard(message.from_user.id)
-        )
-
-        # Завершаем состояние
+        
+        # Очищаем состояние
         await state.finish()
-
+        
+        # Отправляем подтверждение пользователю
+        await message.reply(
+            "✅ Фото получено и отправлено на проверку администратору.\n"
+            "Пожалуйста, ожидайте подтверждения.",
+            reply_markup=InlineKeyboardMarkup().add(
+                InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
+            )
+        )
+        
     except Exception as e:
         logging.error(f"Ошибка при обработке фото возврата: {e}")
         await message.reply(
-            "❌ Произошла ошибка при обработке фото.\n"
+            "❌ Произошла ошибка при обработке фотографии.\n"
             "Пожалуйста, попробуйте еще раз или обратитесь к администратору.",
-            reply_markup=get_main_keyboard(message.from_user.id)
+            reply_markup=InlineKeyboardMarkup().add(
+                InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
+            )
         )
         await state.finish()
-
-@dp.callback_query_handler(lambda c: c.data.startswith('approve_'))
-async def approve_return(callback_query: types.CallbackQuery):
-    """Подтверждение возврата инструмента администратором"""
-    try:
-        # Проверяем, что callback от админа
-        if str(callback_query.from_user.id) != ADMIN_ID:
-            await callback_query.answer("❌ У вас нет прав для этого действия", show_alert=True)
-            return
-
-        # Получаем ID инструмента и чата пользователя
-        _, tool_id, user_chat_id = callback_query.data.split('_')
-        tool_id = int(tool_id)
-        user_chat_id = int(user_chat_id)
-
-        logging.info(f"DEBUG: Получен callback: {callback_query.data}")
-        logging.info(f"DEBUG: Обработка approve для tool_id={tool_id}, chat_id={user_chat_id}")
-
-        # Получаем информацию о возврате
-        return_info = get_return_info(tool_id)
-        logging.info(f"DEBUG: Информация о запросе: {return_info}")
-
-        if not return_info:
-            await callback_query.answer("❌ Информация о возврате не найдена", show_alert=True)
-            return
-
-        # Обновляем статус в БД
-        approve_tool_return(tool_id, return_info[1])
-        logging.info("DEBUG: Запрос успешно одобрен")
-
-        # Уведомляем пользователя
-        await bot.send_message(
-            user_chat_id,
-            f"✅ Возврат инструмента *{return_info[0]}* подтвержден!\n"
-            f"Спасибо за своевременный возврат.",
-            parse_mode="Markdown",
-            reply_markup=get_main_keyboard(user_chat_id)
-        )
-
-        # Обновляем сообщение админа
-        await callback_query.message.edit_caption(
-            f"{callback_query.message.caption}\n\n"
-            "✅ *Возврат подтвержден*",
-            parse_mode="Markdown"
-        )
-        
-        await callback_query.answer("✅ Возврат подтвержден")
-
-    except Exception as e:
-        logging.error(f"Ошибка при подтверждении возврата: {e}")
-        await callback_query.answer("❌ Произошла ошибка при подтверждении возврата", show_alert=True)
-
-@dp.callback_query_handler(lambda c: c.data.startswith('reject_'))
-async def reject_return(callback_query: types.CallbackQuery):
-    """Отклонение возврата инструмента администратором"""
-    try:
-        # Проверяем, что callback от админа
-        if str(callback_query.from_user.id) != ADMIN_ID:
-            await callback_query.answer("❌ У вас нет прав для этого действия", show_alert=True)
-            return
-
-        # Получаем ID инструмента и чата пользователя
-        _, tool_id, user_chat_id = callback_query.data.split('_')
-        tool_id = int(tool_id)
-        user_chat_id = int(user_chat_id)
-
-        # Получаем информацию о возврате
-        return_info = get_return_info(tool_id)
-        if not return_info:
-            await callback_query.answer("❌ Информация о возврате не найдена", show_alert=True)
-            return
-
-        # Обновляем сообщение админа
-        await callback_query.message.edit_caption(
-            f"{callback_query.message.caption}\n\n"
-            "❌ *Возврат отклонен*",
-            parse_mode="Markdown"
-        )
-
-        # Уведомляем пользователя
-        await bot.send_message(
-            user_chat_id,
-            f"❌ Возврат инструмента *{return_info[0]}* отклонен.\n\n"
-            "Причины отклонения могут быть следующими:\n"
-            "• Недостаточно четкое фото\n"
-            "• Не видно серийного номера\n"
-            "• Не показана комплектность\n"
-            "• Видны повреждения\n"
-            "• Инструмент загрязнен\n\n"
-            "Пожалуйста, исправьте указанные проблемы и попробуйте вернуть инструмент снова.",
-            parse_mode="Markdown",
-            reply_markup=get_main_keyboard(user_chat_id)
-        )
-
-        await callback_query.answer("Возврат отклонен")
-
-    except Exception as e:
-        logging.error(f"Ошибка при отклонении возврата: {e}")
-        await callback_query.answer("❌ Произошла ошибка при отклонении возврата", show_alert=True)
