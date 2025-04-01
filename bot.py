@@ -1,5 +1,6 @@
 import logging
-from aiogram import Bot, Dispatcher, executor, types
+from aiogram import Bot, Dispatcher, types
+from aiogram.utils import executor
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.contrib.middlewares.logging import LoggingMiddleware
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
@@ -10,7 +11,7 @@ from db import (
     approve_issue_request, get_issue_request_info, get_tool_by_id,
     get_issued_tool_by_id, update_tool_status, add_tool_history,
     get_tool_history, get_overdue_tools, get_all_issue_requests,
-    create_tables, get_return_info, complete_return
+    create_tables, get_return_info, complete_return, DatabaseConnection
 )
 from config import API_TOKEN
 from datetime import datetime
@@ -410,99 +411,99 @@ async def process_admin_issue_response(callback_query: types.CallbackQuery):
         user_id = int(data[2])
         
         # Получаем информацию о запросе
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        try:
-            # Проверяем существование запроса
-            cursor.execute('''
-                SELECT id, employee_name 
-                FROM issue_requests 
-                WHERE tool_id = ? AND chat_id = ? AND status = "pending"
-            ''', (tool_id, user_id))
-            request = cursor.fetchone()
+        db = DatabaseConnection()
+        with db.connection:
+            cursor = db.connection.cursor()
             
-            if not request:
-                logging.error(f"DEBUG: Запрос на выдачу не найден для tool_id={tool_id}, user_id={user_id}")
-                await callback_query.answer("❌ Ошибка: запрос не найден или уже обработан")
-                return
-                
-            request_id, employee_name = request
-            
-            if action == "approve":
-                # Обновляем статус инструмента
-                cursor.execute('UPDATE tools SET status = "issued" WHERE id = ?', (tool_id,))
-                
-                # Создаем запись о выдаче
+            try:
+                # Проверяем существование запроса
                 cursor.execute('''
-                    INSERT INTO issued_tools (tool_id, employee_name, issue_date, expected_return_date)
-                    VALUES (?, ?, CURRENT_TIMESTAMP, date('now', '+7 days'))
-                ''', (tool_id, employee_name))
+                    SELECT id, employee_name 
+                    FROM issue_requests 
+                    WHERE tool_id = ? AND chat_id = ? AND status = "pending"
+                ''', (tool_id, user_id))
+                request = cursor.fetchone()
                 
-                # Получаем id созданной записи
-                issue_id = cursor.lastrowid
+                if not request:
+                    logging.error(f"DEBUG: Запрос на выдачу не найден для tool_id={tool_id}, user_id={user_id}")
+                    await callback_query.answer("❌ Ошибка: запрос не найден или уже обработан")
+                    return
+                    
+                request_id, employee_name = request
                 
-                # Обновляем статус запроса
-                cursor.execute('UPDATE issue_requests SET status = "approved" WHERE id = ?', (request_id,))
-                
-                # Добавляем запись в историю
-                cursor.execute('''
-                    INSERT INTO tool_history (tool_id, action, employee_name, timestamp)
-                    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-                ''', (tool_id, 'issued', employee_name))
-                
-                conn.commit()
-                
-                # Получаем название инструмента
-                cursor.execute('SELECT name FROM tools WHERE id = ?', (tool_id,))
-                tool_name = cursor.fetchone()[0]
-                
-                # Уведомляем пользователя
-                await bot.send_message(
-                    user_id,
-                    f"✅ Запрос на получение инструмента одобрен!\n\n"
-                    f"🔧 Инструмент: {tool_name}\n"
-                    f"📝 Номер выдачи: {issue_id}\n"
-                    f"⏳ Ожидаемая дата возврата: через 7 дней\n\n"
-                    f"❗️ Пожалуйста, верните инструмент вовремя",
-                    reply_markup=InlineKeyboardMarkup().add(
-                        InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
+                if action == "approve":
+                    # Обновляем статус инструмента
+                    cursor.execute('UPDATE tools SET status = "issued" WHERE id = ?', (tool_id,))
+                    
+                    # Создаем запись о выдаче
+                    cursor.execute('''
+                        INSERT INTO issued_tools (tool_id, employee_name, issue_date, expected_return_date)
+                        VALUES (?, ?, CURRENT_TIMESTAMP, date('now', '+7 days'))
+                    ''', (tool_id, employee_name))
+                    
+                    # Получаем id созданной записи
+                    issue_id = cursor.lastrowid
+                    
+                    # Обновляем статус запроса
+                    cursor.execute('UPDATE issue_requests SET status = "approved" WHERE id = ?', (request_id,))
+                    
+                    # Добавляем запись в историю
+                    cursor.execute('''
+                        INSERT INTO tool_history (tool_id, action, employee_name, timestamp)
+                        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                    ''', (tool_id, 'issued', employee_name))
+                    
+                    db.connection.commit()
+                    
+                    # Получаем название инструмента
+                    cursor.execute('SELECT name FROM tools WHERE id = ?', (tool_id,))
+                    tool_name = cursor.fetchone()[0]
+                    
+                    # Уведомляем пользователя
+                    await bot.send_message(
+                        user_id,
+                        f"✅ Запрос на получение инструмента одобрен!\n\n"
+                        f"🔧 Инструмент: {tool_name}\n"
+                        f"📝 Номер выдачи: {issue_id}\n"
+                        f"⏳ Ожидаемая дата возврата: через 7 дней\n\n"
+                        f"❗️ Пожалуйста, верните инструмент вовремя",
+                        reply_markup=InlineKeyboardMarkup().add(
+                            InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
+                        )
                     )
-                )
+                    
+                    # Обновляем сообщение админа
+                    await callback_query.message.edit_text(
+                        f"{callback_query.message.text}\n\n"
+                        f"✅ Одобрено",
+                        reply_markup=None
+                    )
+                elif action == "reject":
+                    # Обновляем статус запроса
+                    cursor.execute('UPDATE issue_requests SET status = "rejected" WHERE id = ?', (request_id,))
+                    
+                    db.connection.commit()
+                    
+                    # Уведомляем пользователя
+                    await bot.send_message(
+                        user_id,
+                        "❌ Ваш запрос на получение инструмента отклонен."
+                    )
+                    
+                    # Обновляем сообщение админа
+                    await callback_query.message.edit_text(
+                        f"{callback_query.message.text}\n\n"
+                        "❌ Отклонено",
+                        reply_markup=None
+                    )
+            except Exception as e:
+                db.connection.rollback()
+                logging.error(f"Ошибка при обновлении БД: {e}")
+                await callback_query.answer("❌ Ошибка при обновлении базы данных")
+                return
+            finally:
+                cursor.close()
                 
-                # Обновляем сообщение админа
-                await callback_query.message.edit_text(
-                    f"{callback_query.message.text}\n\n"
-                    f"✅ Одобрено",
-                    reply_markup=None
-                )
-            elif action == "reject":
-                # Обновляем статус запроса
-                cursor.execute('UPDATE issue_requests SET status = "rejected" WHERE id = ?', (request_id,))
-                
-                conn.commit()
-                
-                # Уведомляем пользователя
-                await bot.send_message(
-                    user_id,
-                    "❌ Ваш запрос на получение инструмента отклонен."
-                )
-                
-                # Обновляем сообщение админа
-                await callback_query.message.edit_text(
-                    f"{callback_query.message.text}\n\n"
-                    "❌ Отклонено",
-                    reply_markup=None
-                )
-        except Exception as e:
-            conn.rollback()
-            logging.error(f"Ошибка при обновлении БД: {e}")
-            await callback_query.answer("❌ Ошибка при обновлении базы данных")
-            return
-        finally:
-            cursor.close()
-            conn.close()
-            
     except Exception as e:
         logging.error(f"Ошибка при обработке одобрения: {e}")
         await callback_query.answer("❌ Произошла ошибка при обработке запроса")
@@ -1152,64 +1153,76 @@ async def approve_return(callback_query: types.CallbackQuery):
         issue_id = int(data[2])
         user_id = int(data[3])
         
-        # Получаем информацию о возврате
-        return_info = get_return_info(issue_id)
-        if not return_info:
-            logging.error(f"DEBUG: Не найдена информация о возврате с ID {issue_id}")
-            await callback_query.answer("❌ Ошибка: информация о возврате не найдена")
-            return
+        db = DatabaseConnection()
+        with db.connection:
+            cursor = db.connection.cursor()
             
-        # Обновляем статус инструмента в БД
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        try:
-            # Получаем tool_id из issued_tools
-            cursor.execute('SELECT tool_id FROM issued_tools WHERE id = ?', (issue_id,))
-            tool_id = cursor.fetchone()[0]
-            
-            # Обновляем статус инструмента на "available"
-            cursor.execute('UPDATE tools SET status = "available" WHERE id = ?', (tool_id,))
-            
-            # Устанавливаем дату возврата
-            cursor.execute('UPDATE issued_tools SET return_date = CURRENT_TIMESTAMP WHERE id = ?', (issue_id,))
-            
-            # Добавляем запись в историю
-            cursor.execute(
-                'INSERT INTO tool_history (tool_id, action, employee_name, timestamp) VALUES (?, ?, ?, CURRENT_TIMESTAMP)',
-                (tool_id, 'returned', return_info[1])
-            )
-            
-            conn.commit()
-            
-            # Уведомляем администратора
-            await callback_query.message.edit_caption(
-                callback_query.message.caption + "\n\n✅ Возврат подтвержден",
-                reply_markup=None
-            )
-            
-            # Уведомляем пользователя
-            await bot.send_message(
-                user_id,
-                f"✅ Возврат инструмента подтвержден администратором.\n"
-                f"Спасибо за использование системы!",
-                reply_markup=InlineKeyboardMarkup().add(
-                    InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
+            try:
+                # Получаем информацию о возврате
+                cursor.execute("""
+                    SELECT t.id, t.name, it.employee_name, it.issue_date
+                    FROM issued_tools it
+                    JOIN tools t ON it.tool_id = t.id
+                    WHERE it.id = ?
+                """, (issue_id,))
+                
+                return_info = cursor.fetchone()
+                if not return_info:
+                    logging.error(f"DEBUG: Не найдена информация о возврате с ID {issue_id}")
+                    await callback_query.answer("❌ Ошибка: информация о возврате не найдена")
+                    return
+                
+                tool_id, tool_name, employee_name, issue_date = return_info
+                
+                # Обновляем статус инструмента
+                cursor.execute("UPDATE tools SET status = 'available' WHERE id = ?", (tool_id,))
+                
+                # Обновляем дату возврата
+                return_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                cursor.execute("""
+                    UPDATE issued_tools 
+                    SET return_date = ? 
+                    WHERE id = ?
+                """, (return_date, issue_id))
+                
+                # Добавляем запись в историю
+                cursor.execute("""
+                    INSERT INTO tool_history (tool_id, action, employee_name, timestamp)
+                    VALUES (?, 'returned', ?, ?)
+                """, (tool_id, employee_name, return_date))
+                
+                db.connection.commit()
+                
+                # Отправляем уведомление пользователю
+                await bot.send_message(
+                    user_id,
+                    f"✅ Возврат инструмента подтвержден!\n"
+                    f"🔧 Инструмент: {tool_name}\n"
+                    f"📅 Дата возврата: {return_date}",
+                    reply_markup=InlineKeyboardMarkup().add(
+                        InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu")
+                    )
                 )
-            )
-            
-        except Exception as e:
-            conn.rollback()
-            logging.error(f"Ошибка при обновлении БД: {e}")
-            await callback_query.answer("❌ Ошибка при обновлении базы данных")
-            return
-        finally:
-            cursor.close()
-            conn.close()
-            
+                
+                # Обновляем сообщение админа
+                await callback_query.message.edit_text(
+                    f"✅ Возврат инструмента подтвержден\n"
+                    f"🔧 Инструмент: {tool_name}\n"
+                    f"👤 Сотрудник: {employee_name}\n"
+                    f"📅 Дата выдачи: {issue_date}\n"
+                    f"📅 Дата возврата: {return_date}",
+                    reply_markup=None
+                )
+                
+            except Exception as e:
+                db.connection.rollback()
+                logging.error(f"Ошибка при подтверждении возврата: {e}")
+                await callback_query.answer("❌ Ошибка при обновлении базы данных")
+                return
+                
     except Exception as e:
-        logging.error(f"Ошибка при подтверждении возврата: {e}")
-        await callback_query.answer("❌ Произошла ошибка при обработке подтверждения")
+        logging.error(f"Ошибка при обработке подтверждения возврата: {e}")
+        await callback_query.answer("❌ Произошла ошибка при обработке запроса")
         
     await callback_query.answer()
 
